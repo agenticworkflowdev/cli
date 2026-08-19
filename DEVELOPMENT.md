@@ -49,9 +49,48 @@
 
 7. If using Visual Studio Code, install the official **Go** extension by Google. It integrates formatting, tests, debugging, and `gopls`.
 
+## Run during development
+
+Run the CLI directly from the current source code:
+
+```sh
+go run ./cmd/awdev
+```
+
+`go run` compiles the current source into a temporary executable and runs it immediately. There is no need to build or install `awdev` after every change.
+
+Pass commands and arguments in the same way as with the installed executable:
+
+```sh
+go run ./cmd/awdev --help
+go run ./cmd/awdev some-command
+```
+
+The usual local development cycle is:
+
+```text
+edit source -> go run ./cmd/awdev
+```
+
+## Build and run
+
+Build the executable inside the ignored `bin` directory and run it:
+
+```sh
+go build -o bin/awdev ./cmd/awdev
+./bin/awdev
+```
+
+To install the executable into the Go binary directory and invoke it as `awdev` from any directory:
+
+```sh
+go install ./cmd/awdev
+awdev
+```
+
 ## Validate changes
 
-Once source code exists, format, analyze, test, and build the project:
+Format, analyze, test, and build the project:
 
 ```sh
 gofmt -w .
