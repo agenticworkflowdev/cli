@@ -8,7 +8,8 @@ import (
 )
 
 func main() {
-	command := cli.NewRootCommand()
+	var selectedAgent string
+	command := cli.NewRootCommand(&selectedAgent)
 	command.SetOut(os.Stdout)
 	command.SetErr(os.Stderr)
 
