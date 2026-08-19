@@ -16,20 +16,26 @@
    go version
    ```
 
-3. Initialize the Go module from the repository root:
+3. Change to the root of the cloned repository:
 
    ```sh
-   cd /Users/jiprochazka/Projects/Programming/AgenticWorkflowDev/cli
-   go mod init github.com/agenticworkflowdev/cli
+   cd /path/to/cli
    ```
 
-4. Install the Go language server:
+4. Download the dependencies declared in `go.mod` and verify them against `go.sum`:
+
+   ```sh
+   go mod download
+   go mod verify
+   ```
+
+5. Install the Go language server:
 
    ```sh
    go install golang.org/x/tools/gopls@latest
    ```
 
-5. Add installed Go tools to `PATH` in `~/.zshrc`:
+6. Add installed Go tools to `PATH` in `~/.zshrc`:
 
    ```sh
    export PATH="$PATH:$(go env GOPATH)/bin"
@@ -41,7 +47,7 @@
    source ~/.zshrc
    ```
 
-6. If using Visual Studio Code, install the official **Go** extension by Google. It integrates formatting, tests, debugging, and `gopls`.
+7. If using Visual Studio Code, install the official **Go** extension by Google. It integrates formatting, tests, debugging, and `gopls`.
 
 ## Validate changes
 
