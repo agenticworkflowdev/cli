@@ -22,7 +22,9 @@ import (
 func NewCommand() *cobra.Command {
 	processRunner := processrun.NewRunner()
 	githubClient := githubapi.NewClient("gh", processRunner)
-	runService := workflow.NewRunService(state.NewFileLocker(), state.NewManifestReader(), githubClient, nil)
+	worktreeManager := gitrepo.NewWorktreeManager("git", processRunner)
+	worktreeBootstrapper := workflow.NewWorktreeBootstrapper(worktreeManager)
+	runService := workflow.NewRunService(state.NewFileLocker(), state.NewManifestReader(), githubClient, worktreeBootstrapper)
 	return cli.NewRootCommand(cli.Services{
 		WorkingDirectory:       os.Getwd,
 		DiscoverRoot:           gitrepo.DiscoverControllerRoot,

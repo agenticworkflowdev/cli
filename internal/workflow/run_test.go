@@ -9,6 +9,7 @@ import (
 	"time"
 
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
+	"github.com/agenticworkflowdev/cli/internal/gitrepo"
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
@@ -19,7 +20,12 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	locker := fakeLocker{events: &events, lock: lock}
 	existing := fakeExisting{events: &events}
 	fetcher := fakeFetcher{events: &events, snapshot: validSnapshot()}
-	next := &fakeBootstrapper{events: &events}
+	next := &fakeBootstrapper{events: &events, result: gitrepo.Worktree{
+		Branch:            "gh-17-a-title",
+		BaseSHA:           strings.Repeat("a", 40),
+		AbsolutePath:      "/repo/.awdev/worktrees/gh-17-a-title",
+		SpecificationPath: ".awdev/specs/gh-17.md",
+	}}
 	service := workflow.NewRunService(locker, existing, fetcher, next)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
@@ -28,6 +34,9 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	}
 	if result.Outcome != workflow.RunReady || result.WorkflowID != "gh-17" || result.Snapshot.Issue.Number != 17 {
 		t.Fatalf("result = %#v", result)
+	}
+	if result.Worktree != next.result {
+		t.Fatalf("result worktree = %#v, want %#v", result.Worktree, next.result)
 	}
 	want := []string{"state:gh-17", "lock:gh-17", "state:gh-17", "github:17", "continue:gh-17", "unlock"}
 	if !reflect.DeepEqual(events, want) {
@@ -132,6 +141,23 @@ func TestRunGitHubRechecksManifestAfterAcquiringLock(t *testing.T) {
 	}
 }
 
+func TestRunGitHubRequiresWorktreeBootstrapperForNewWorkflow(t *testing.T) {
+	events := []string{}
+	service := workflow.NewRunService(
+		fakeLocker{events: &events, lock: &fakeLock{events: &events}},
+		fakeExisting{events: &events},
+		fakeFetcher{events: &events, snapshot: validSnapshot()},
+		nil,
+	)
+	_, err := service.RunGitHub(context.Background(), "/repo", 17)
+	if err == nil || !strings.Contains(err.Error(), "not fully configured") {
+		t.Fatalf("error = %v, want configuration failure", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("incomplete service performed side effects: %v", events)
+	}
+}
+
 func validSnapshot() githubapi.Snapshot {
 	return githubapi.Snapshot{
 		Repository: githubapi.Repository{NameWithOwner: "owner/repository", DefaultBranch: "main"},
@@ -201,13 +227,15 @@ type fakeBootstrapper struct {
 	events    *[]string
 	called    bool
 	bootstrap workflow.Bootstrap
+	result    gitrepo.Worktree
+	err       error
 }
 
-func (bootstrapper *fakeBootstrapper) Continue(_ context.Context, bootstrap workflow.Bootstrap) error {
+func (bootstrapper *fakeBootstrapper) Continue(_ context.Context, bootstrap workflow.Bootstrap) (gitrepo.Worktree, error) {
 	bootstrapper.called = true
 	bootstrapper.bootstrap = bootstrap
 	*bootstrapper.events = append(*bootstrapper.events, "continue:"+bootstrap.WorkflowID)
-	return nil
+	return bootstrapper.result, bootstrapper.err
 }
 
 func fmtInt(value int) string {

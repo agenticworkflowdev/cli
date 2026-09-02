@@ -67,11 +67,12 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 	}
 	_, err := fmt.Fprintf(
 		command.OutOrStdout(),
-		"Validated GitHub issue %s#%d on %s as %s.\n",
+		"Prepared worktree %s at %s pinned to %s for GitHub issue %s#%d.\n",
+		result.Worktree.Branch,
+		result.Worktree.AbsolutePath,
+		result.Worktree.BaseSHA,
 		result.Snapshot.Repository.NameWithOwner,
 		result.Snapshot.Issue.Number,
-		result.Snapshot.Repository.DefaultBranch,
-		result.Snapshot.Actor.Login,
 	)
 	return err
 }

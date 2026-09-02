@@ -91,12 +91,29 @@ func TestInitRejectsInvalidExistingConfigBeforeFilesystemChanges(t *testing.T) {
 	}
 }
 
-func TestRunGitHubValidatesIssueWithoutCreatingWorkflowArtifacts(t *testing.T) {
+func TestRunGitHubCreatesValidatedWorktreeWithoutManifest(t *testing.T) {
 	repository := t.TempDir()
 	command := exec.Command("git", "init", "--quiet", repository)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
+	runGitIn(t, repository, "config", "user.email", "test@example.com")
+	runGitIn(t, repository, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, repository, "add", "README.md")
+	runGitIn(t, repository, "commit", "--quiet", "-m", "base")
+	runGitIn(t, repository, "branch", "-M", "main")
+	baseSHA := gitOutputIn(t, repository, "rev-parse", "HEAD")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", "--quiet", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init bare: %v: %s", err, output)
+	}
+	remoteURL := "https://github.com/owner/repository.git"
+	runGitIn(t, repository, "remote", "add", "origin", remoteURL)
+	runGitIn(t, repository, "config", "url.file://"+filepath.ToSlash(bare)+"/.insteadOf", remoteURL)
+	runGitIn(t, repository, "push", "--quiet", "-u", "origin", "main")
 	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
 		t.Fatalf("initialize repository: %v", err)
 	}
@@ -125,14 +142,23 @@ esac
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute run: %v", err)
 	}
-	if got, want := output.String(), "Validated GitHub issue owner/repository#17 on main as octocat.\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+	for _, want := range []string{"Prepared worktree gh-17-a-title", "pinned to " + baseSHA, "for GitHub issue owner/repository#17"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want substring %q", output.String(), want)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(repository, ".awdev", "issues", "gh-17", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("manifest unexpectedly exists: %v", err)
 	}
-	if entries, err := os.ReadDir(filepath.Join(repository, ".awdev", "worktrees")); err != nil || len(entries) != 0 {
-		t.Fatalf("worktree directory entries = %v, err = %v", entries, err)
+	worktree := filepath.Join(repository, ".awdev", "worktrees", "gh-17-a-title")
+	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got != baseSHA {
+		t.Fatalf("worktree HEAD = %q, want %q", got, baseSHA)
+	}
+	if got := gitOutputIn(t, worktree, "branch", "--show-current"); got != "gh-17-a-title" {
+		t.Fatalf("worktree branch = %q", got)
+	}
+	if got := gitOutputIn(t, repository, "branch", "--show-current"); got != "main" {
+		t.Fatalf("controller branch changed to %q", got)
 	}
 }
 
@@ -210,4 +236,24 @@ func filesystemSnapshot(t *testing.T, root string) map[string]string {
 		t.Fatalf("snapshot filesystem: %v", err)
 	}
 	return snapshot
+}
+
+func runGitIn(t *testing.T, directory string, arguments ...string) {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", arguments, err, output)
+	}
+}
+
+func gitOutputIn(t *testing.T, directory string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", arguments, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }

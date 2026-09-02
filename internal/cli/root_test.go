@@ -11,6 +11,7 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/cli"
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
+	"github.com/agenticworkflowdev/cli/internal/gitrepo"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
@@ -407,6 +408,11 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 					Actor:      githubapi.Actor{Login: "octocat"},
 					Issue:      githubapi.Issue{Number: 17},
 				},
+				Worktree: gitrepo.Worktree{
+					Branch:       "gh-17-a-title",
+					BaseSHA:      strings.Repeat("a", 40),
+					AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title",
+				},
 			}, nil
 		},
 		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
@@ -420,7 +426,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "Validated GitHub issue owner/repository#17 on main as octocat.\n"; got != want {
+	if got, want := output.String(), "Prepared worktree gh-17-a-title at /repo/.awdev/worktrees/gh-17-a-title pinned to aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for GitHub issue owner/repository#17.\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

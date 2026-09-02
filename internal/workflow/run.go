@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
+	"github.com/agenticworkflowdev/cli/internal/gitrepo"
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
@@ -25,6 +26,7 @@ type RunResult struct {
 	WorkflowID string
 	Outcome    RunOutcome
 	Snapshot   githubapi.Snapshot
+	Worktree   gitrepo.Worktree
 	Existing   state.ExistingWorkflow
 }
 
@@ -38,7 +40,7 @@ type Bootstrap struct {
 
 // Bootstrapper continues the ordered run after GitHub validation.
 type Bootstrapper interface {
-	Continue(context.Context, Bootstrap) error
+	Continue(context.Context, Bootstrap) (gitrepo.Worktree, error)
 }
 
 // RunService downloads and validates a GitHub issue under its workflow lock.
@@ -49,8 +51,7 @@ type RunService struct {
 	bootstrapper Bootstrapper
 }
 
-// NewRunService constructs the run application service. bootstrapper may be
-// nil until the deterministic-worktree slice is installed.
+// NewRunService constructs the run application service.
 func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper) *RunService {
 	return &RunService{locker: locker, existing: existing, github: github, bootstrapper: bootstrapper}
 }
@@ -61,7 +62,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if issueNumber <= 0 {
 		return RunResult{}, errors.New("issue number must be positive")
 	}
-	if service.locker == nil || service.existing == nil || service.github == nil {
+	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil {
 		return RunResult{}, errors.New("GitHub run service is not fully configured")
 	}
 	workflowID := "gh-" + strconv.Itoa(issueNumber)
@@ -101,10 +102,9 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	}
 
 	bootstrap := Bootstrap{ControllerRoot: controllerRoot, WorkflowID: workflowID, Snapshot: snapshot}
-	if service.bootstrapper != nil {
-		if err := service.bootstrapper.Continue(ctx, bootstrap); err != nil {
-			return RunResult{}, err
-		}
+	worktree, err := service.bootstrapper.Continue(ctx, bootstrap)
+	if err != nil {
+		return RunResult{}, err
 	}
-	return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot}, nil
+	return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree}, nil
 }
