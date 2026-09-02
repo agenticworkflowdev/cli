@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "agent": {
+    "provider": "codex",
+    "timeout": "30m"
+  },
+  "codex": {
+    "binary": "codex"
+  },
+  "checks": [
+    {
+      "name": "tests",
+      "command": ["go", "test", "./..."],
+      "timeout": "10m"
+    }
+  ],
+  "review": {
+    "max_attempts": 3
+  },
+  "protected_paths": []
+}

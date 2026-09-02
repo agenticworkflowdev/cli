@@ -1,40 +1,68 @@
 package cli
 
 import (
-	"fmt"
+	"context"
+	"os"
 
-	"charm.land/huh/v2"
+	"github.com/agenticworkflowdev/cli/internal/agent"
+	"github.com/agenticworkflowdev/cli/internal/initrepo"
 	"github.com/spf13/cobra"
 )
 
+// Operation identifies a source-scoped CLI action.
+type Operation string
+
+const (
+	OperationRun    Operation = "run"
+	OperationStatus Operation = "status"
+	OperationResume Operation = "resume"
+	OperationRetry  Operation = "retry"
+)
+
+// Source identifies an issue provider reserved by the command grammar.
+type Source string
+
+const (
+	SourceGitHub Source = "github"
+	SourceLinear Source = "linear"
+)
+
+// SourceItem is one validated source-scoped issue identity.
+type SourceItem struct {
+	Source Source
+	Number int
+}
+
+// Services contains the side-effecting seams used by the CLI.
+type Services struct {
+	WorkingDirectory       func() (string, error)
+	DiscoverRoot           func(context.Context, string) (string, error)
+	ValidateExistingConfig func(string) error
+	Initialize             func(string, agent.Provider) (initrepo.Result, error)
+	ValidateConfig         func(string) error
+	Execute                func(context.Context, Operation, SourceItem, string) error
+	Getenv                 func(string) string
+}
+
 // NewRootCommand creates the awdev root command.
-func NewRootCommand(selectedAgent *string) *cobra.Command {
-	return &cobra.Command{
+func NewRootCommand(services Services) *cobra.Command {
+	if services.Getenv == nil {
+		services.Getenv = os.Getenv
+	}
+
+	command := &cobra.Command{
 		Use:           "awdev",
 		Short:         "Agentic Workflow Development CLI",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(command *cobra.Command, _ []string) error {
-			form := huh.NewForm(
-				huh.NewGroup(
-					huh.NewSelect[string]().
-						Title("Select the AI:").
-						Options(
-							huh.NewOption("Claude Code", "Claude Code"),
-							huh.NewOption("Codex", "Codex"),
-						).
-						Value(selectedAgent),
-				),
-			).
-				WithInput(command.InOrStdin()).
-				WithOutput(command.OutOrStdout())
-
-			if err := form.Run(); err != nil {
-				return fmt.Errorf("select agent: %w", err)
-			}
-
-			return nil
+			return command.Help()
 		},
 	}
+	command.AddCommand(newInitCommand(services))
+	for _, operation := range []Operation{OperationRun, OperationStatus, OperationResume, OperationRetry} {
+		command.AddCommand(newSourceCommand(operation, services))
+	}
+	return command
 }

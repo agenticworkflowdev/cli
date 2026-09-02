@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/agenticworkflowdev/cli/internal/cli"
+	"github.com/agenticworkflowdev/cli/internal/app"
 )
 
 func main() {
-	var selectedAgent string
-	command := cli.NewRootCommand(&selectedAgent)
+	command := app.NewCommand()
 	command.SetOut(os.Stdout)
 	command.SetErr(os.Stderr)
 
