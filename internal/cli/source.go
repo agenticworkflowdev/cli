@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/agenticworkflowdev/cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
@@ -32,19 +33,47 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			if err := services.ValidateConfig(root); err != nil {
 				return fmt.Errorf("validate configuration: %w", err)
 			}
-			if services.Execute == nil {
-				return fmt.Errorf("awdev %s github is not implemented yet", operation)
-			}
-
 			item, err := parseSourceItem(operation, args)
 			if err != nil {
 				return err
+			}
+			if operation == OperationRun && item.Source == SourceGitHub && services.RunGitHub != nil {
+				result, err := services.RunGitHub(command.Context(), root, item.Number)
+				if err != nil {
+					return err
+				}
+				return renderGitHubRun(command, result)
+			}
+			if services.Execute == nil {
+				return fmt.Errorf("awdev %s github is not implemented yet", operation)
 			}
 			return services.Execute(command.Context(), operation, item, root)
 		},
 	}
 	command.Flags().SetInterspersed(false)
 	return command
+}
+
+func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
+	if result.Outcome == workflow.RunExisting {
+		_, err := fmt.Fprintf(
+			command.OutOrStdout(),
+			"Workflow %s already exists: %s/%s.\n",
+			result.WorkflowID,
+			result.Existing.Phase,
+			result.Existing.Status,
+		)
+		return err
+	}
+	_, err := fmt.Fprintf(
+		command.OutOrStdout(),
+		"Validated GitHub issue %s#%d on %s as %s.\n",
+		result.Snapshot.Repository.NameWithOwner,
+		result.Snapshot.Issue.Number,
+		result.Snapshot.Repository.DefaultBranch,
+		result.Snapshot.Actor.Login,
+	)
+	return err
 }
 
 func parseSourceItem(operation Operation, args []string) (SourceItem, error) {

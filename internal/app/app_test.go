@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/app"
 	"github.com/agenticworkflowdev/cli/internal/config"
+	"github.com/agenticworkflowdev/cli/internal/initrepo"
 )
 
 func TestInitCommandInitializesOriginalRepositoryFromNestedDirectory(t *testing.T) {
@@ -86,6 +88,93 @@ func TestInitRejectsInvalidExistingConfigBeforeFilesystemChanges(t *testing.T) {
 	after := filesystemSnapshot(t, repository)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("filesystem changed after invalid config\nbefore: %#v\nafter: %#v", before, after)
+	}
+}
+
+func TestRunGitHubValidatesIssueWithoutCreatingWorkflowArtifacts(t *testing.T) {
+	repository := t.TempDir()
+	command := exec.Command("git", "init", "--quiet", repository)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+
+	binDirectory := t.TempDir()
+	ghPath := filepath.Join(binDirectory, "gh")
+	ghScript := `#!/bin/sh
+case "$1 $2" in
+  "repo view") printf '%s' '{"nameWithOwner":"owner/repository","defaultBranchRef":{"name":"main"}}' ;;
+  "api user") printf '%s' '{"login":"octocat"}' ;;
+  "issue view") printf '%s' '{"number":17,"title":"A title","body":"body with $() ; and <!-- marker -->","url":"https://github.com/owner/repository/issues/17","state":"OPEN","updatedAt":"2026-08-28T12:00:00Z"}' ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(repository)
+
+	var output bytes.Buffer
+	root := app.NewCommand()
+	root.SetOut(&output)
+	root.SetErr(&output)
+	root.SetArgs([]string{"run", "github", "17"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute run: %v", err)
+	}
+	if got, want := output.String(), "Validated GitHub issue owner/repository#17 on main as octocat.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(repository, ".awdev", "issues", "gh-17", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifest unexpectedly exists: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(repository, ".awdev", "worktrees")); err != nil || len(entries) != 0 {
+		t.Fatalf("worktree directory entries = %v, err = %v", entries, err)
+	}
+}
+
+func TestRunGitHubReportsExistingManifestWithoutGitHub(t *testing.T) {
+	repository := t.TempDir()
+	command := exec.Command("git", "init", "--quiet", repository)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+	stateDirectory := filepath.Join(repository, ".awdev", "issues", "gh-17")
+	if err := os.MkdirAll(stateDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDirectory, "manifest.json"), []byte(`{"phase":"implementation","status":"failed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binDirectory := t.TempDir()
+	githubCalled := filepath.Join(binDirectory, "github-called")
+	ghPath := filepath.Join(binDirectory, "gh")
+	ghScript := "#!/bin/sh\nprintf called > \"$AWDEV_GITHUB_CALLED\"\nexit 99\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AWDEV_GITHUB_CALLED", githubCalled)
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(repository)
+
+	var output bytes.Buffer
+	root := app.NewCommand()
+	root.SetOut(&output)
+	root.SetArgs([]string{"run", "github", "17"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute duplicate run: %v", err)
+	}
+	if got, want := output.String(), "Workflow gh-17 already exists: implementation/failed.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(githubCalled); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("GitHub was called for an existing manifest: %v", err)
 	}
 }
 

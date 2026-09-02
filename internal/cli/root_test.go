@@ -10,7 +10,10 @@ import (
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/cli"
+	githubapi "github.com/agenticworkflowdev/cli/internal/github"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	"github.com/agenticworkflowdev/cli/internal/state"
+	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
 
 func TestRootCommandShowsHelpWithoutSelectingAnAgent(t *testing.T) {
@@ -383,5 +386,67 @@ func TestHelpShowsSourceAwareForms(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("help %q does not contain %q", output.String(), want)
 		}
+	}
+}
+
+func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
+	var output bytes.Buffer
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		RunGitHub: func(_ context.Context, root string, number int) (workflow.RunResult, error) {
+			if root != "/repo" || number != 17 {
+				t.Fatalf("run service inputs = %q, %d", root, number)
+			}
+			return workflow.RunResult{
+				WorkflowID: "gh-17",
+				Outcome:    workflow.RunReady,
+				Snapshot: githubapi.Snapshot{
+					Repository: githubapi.Repository{NameWithOwner: "owner/repository", DefaultBranch: "main"},
+					Actor:      githubapi.Actor{Login: "octocat"},
+					Issue:      githubapi.Issue{Number: 17},
+				},
+			}, nil
+		},
+		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
+			t.Fatal("generic operation invoked instead of GitHub run service")
+			return nil
+		},
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(&output)
+	command.SetArgs([]string{"run", "github", "17"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if got, want := output.String(), "Validated GitHub issue owner/repository#17 on main as octocat.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
+	var output bytes.Buffer
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		RunGitHub: func(context.Context, string, int) (workflow.RunResult, error) {
+			return workflow.RunResult{
+				WorkflowID: "gh-17",
+				Outcome:    workflow.RunExisting,
+				Existing:   state.ExistingWorkflow{Exists: true, Phase: "spec", Status: "blocked"},
+			}, nil
+		},
+		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error { return nil },
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(&output)
+	command.SetArgs([]string{"run", "github", "17"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if got, want := output.String(), "Workflow gh-17 already exists: spec/blocked.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

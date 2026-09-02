@@ -6,6 +6,7 @@ import (
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	"github.com/agenticworkflowdev/cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,7 @@ type Services struct {
 	ValidateExistingConfig func(string) error
 	Initialize             func(string, agent.Provider) (initrepo.Result, error)
 	ValidateConfig         func(string) error
+	RunGitHub              func(context.Context, string, int) (workflow.RunResult, error)
 	Execute                func(context.Context, Operation, SourceItem, string) error
 	Getenv                 func(string) string
 }
