@@ -146,6 +146,10 @@ func (manager *WorktreeManager) Prepare(ctx context.Context, request WorktreeReq
 		BaseSHA:      baseSHA,
 		AbsolutePath: absolutePath,
 	}
+	repairedStaleRegistration, err := manager.removeMissingDetachedRegistration(ctx, controllerRoot, absolutePath)
+	if err != nil {
+		return Worktree{}, err
+	}
 
 	matched, err := manager.matchesValidatedWorktree(ctx, controllerRoot, result)
 	if err != nil {
@@ -165,11 +169,28 @@ func (manager *WorktreeManager) Prepare(ctx context.Context, request WorktreeReq
 		return Worktree{}, err
 	}
 	if branchExists {
-		return Worktree{}, fmt.Errorf("deterministic branch %q already exists without its exact worktree; preserving it for diagnosis", branch)
+		if !repairedStaleRegistration {
+			return Worktree{}, fmt.Errorf("deterministic branch %q already exists without its exact worktree; preserving it for diagnosis", branch)
+		}
+		branchHead, resolveErr := manager.output(ctx, controllerRoot, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+		if resolveErr != nil {
+			return Worktree{}, fmt.Errorf("resolve recovered workflow branch: %w", resolveErr)
+		}
+		if branchHead != baseSHA {
+			return Worktree{}, fmt.Errorf("recovered workflow branch HEAD %q does not match pinned base %q; preserving it for diagnosis", branchHead, baseSHA)
+		}
 	}
 
-	if err := manager.command(ctx, controllerRoot, "worktree", "add", "-b", branch, absolutePath, baseSHA); err != nil {
+	// Keep the disposable worktree detached and create the workflow branch as a
+	// separate ref. If .awdev is deleted manually, stale Git worktree metadata
+	// then cannot lock that branch against deletion.
+	if err := manager.command(ctx, controllerRoot, "worktree", "add", "--detach", absolutePath, baseSHA); err != nil {
 		return Worktree{}, fmt.Errorf("create deterministic worktree: %w", err)
+	}
+	if !branchExists {
+		if err := manager.command(ctx, controllerRoot, "branch", branch, baseSHA); err != nil {
+			return Worktree{}, fmt.Errorf("create deterministic workflow branch: %w", err)
+		}
 	}
 	matched, err = manager.matchesValidatedWorktree(ctx, controllerRoot, result)
 	if err != nil {
@@ -179,6 +200,28 @@ func (manager *WorktreeManager) Prepare(ctx context.Context, request WorktreeReq
 		return Worktree{}, errors.New("created worktree is not registered; preserving bootstrap artifacts for diagnosis")
 	}
 	return result, nil
+}
+
+func (manager *WorktreeManager) removeMissingDetachedRegistration(ctx context.Context, controllerRoot, expectedPath string) (bool, error) {
+	entries, err := manager.listWorktrees(ctx, controllerRoot)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !samePath(entry.path, expectedPath) || !entry.detached {
+			continue
+		}
+		if _, statErr := os.Lstat(expectedPath); statErr == nil {
+			return false, nil
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect detached worktree path: %w", statErr)
+		}
+		if err := manager.command(ctx, controllerRoot, "worktree", "remove", "--force", expectedPath); err != nil {
+			return false, fmt.Errorf("remove stale detached worktree registration: %w", err)
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func validateWorktreeRequest(request WorktreeRequest) error {
@@ -421,16 +464,16 @@ func findDeterministicWorktree(entries []worktreeEntry, expectedPath, expectedBr
 			branchMatch = entry
 		}
 	}
-	if pathMatch == nil && branchMatch == nil {
-		return nil, ""
-	}
 	if pathMatch == nil {
+		if branchMatch == nil {
+			return nil, ""
+		}
 		return nil, fmt.Sprintf("deterministic branch %q is registered at conflicting path %q; preserving it for diagnosis", expectedBranch, branchMatch.path)
 	}
-	if branchMatch == nil {
+	if !pathMatch.detached && pathMatch.branch != expectedBranch {
 		return nil, fmt.Sprintf("deterministic worktree path %q is registered on conflicting branch %q; preserving it for diagnosis", expectedPath, pathMatch.branch)
 	}
-	if pathMatch != branchMatch {
+	if branchMatch != nil && pathMatch != branchMatch {
 		return nil, fmt.Sprintf("deterministic branch %q and path %q belong to different worktrees; preserving them for diagnosis", expectedBranch, expectedPath)
 	}
 	return pathMatch, ""
@@ -469,7 +512,7 @@ func samePath(first, second string) bool {
 }
 
 func (manager *WorktreeManager) validateWorktree(ctx context.Context, controllerRoot string, expected Worktree, actual worktreeEntry) error {
-	if actual.detached || actual.bare || actual.branch != expected.Branch {
+	if actual.bare || (!actual.detached && actual.branch != expected.Branch) {
 		return fmt.Errorf("deterministic worktree has conflicting branch state; preserving it for diagnosis")
 	}
 	if actual.head != expected.BaseSHA {
@@ -507,12 +550,21 @@ func (manager *WorktreeManager) validateWorktree(ctx context.Context, controller
 	if checkedHead != expected.BaseSHA {
 		return fmt.Errorf("deterministic worktree checked-out HEAD %q does not match pinned base %q; preserving it for diagnosis", checkedHead, expected.BaseSHA)
 	}
-	checkedBranch, err := manager.output(ctx, expected.AbsolutePath, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branchHead, err := manager.output(ctx, controllerRoot, "rev-parse", "--verify", "refs/heads/"+expected.Branch+"^{commit}")
 	if err != nil {
-		return fmt.Errorf("validate deterministic worktree branch: %w", err)
+		return fmt.Errorf("validate deterministic workflow branch: %w", err)
 	}
-	if checkedBranch != expected.Branch {
-		return fmt.Errorf("deterministic worktree checked-out branch %q does not match %q; preserving it for diagnosis", checkedBranch, expected.Branch)
+	if branchHead != expected.BaseSHA {
+		return fmt.Errorf("deterministic workflow branch HEAD %q does not match pinned base %q; preserving it for diagnosis", branchHead, expected.BaseSHA)
+	}
+	if !actual.detached {
+		checkedBranch, err := manager.output(ctx, expected.AbsolutePath, "symbolic-ref", "--quiet", "--short", "HEAD")
+		if err != nil {
+			return fmt.Errorf("validate deterministic worktree branch: %w", err)
+		}
+		if checkedBranch != expected.Branch {
+			return fmt.Errorf("deterministic worktree checked-out branch %q does not match %q; preserving it for diagnosis", checkedBranch, expected.Branch)
+		}
 	}
 	return nil
 }

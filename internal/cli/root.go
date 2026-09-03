@@ -34,6 +34,9 @@ type SourceItem struct {
 	Number int
 }
 
+// ProgressReporter renders human-readable progress for a long-running command.
+type ProgressReporter func(string)
+
 // Services contains the side-effecting seams used by the CLI.
 type Services struct {
 	WorkingDirectory       func() (string, error)
@@ -41,7 +44,7 @@ type Services struct {
 	ValidateExistingConfig func(string) error
 	Initialize             func(string, agent.Provider) (initrepo.Result, error)
 	ValidateConfig         func(string) error
-	RunGitHub              func(context.Context, string, int) (workflow.RunResult, error)
+	RunGitHub              func(context.Context, string, int, ProgressReporter) (workflow.RunResult, error)
 	StatusGitHub           func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error)
 	Execute                func(context.Context, Operation, SourceItem, string) error
 	Getenv                 func(string) string

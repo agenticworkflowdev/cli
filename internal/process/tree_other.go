@@ -11,4 +11,6 @@ func configureProcessTree(_ *exec.Cmd) error {
 	return errors.New("process-tree termination is unsupported on this platform")
 }
 
-func terminateProcessTree(_ int, _ bool) {}
+func terminateProcessTree(_ int, _ bool) error {
+	return errors.New("process-tree termination is unsupported on this platform")
+}

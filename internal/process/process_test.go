@@ -59,6 +59,12 @@ func TestRunnerReturnsExitMetadata(t *testing.T) {
 	if result.ExitCode != 23 || exitError.Result.ExitCode != 23 || string(result.Stderr) != "failed" {
 		t.Fatalf("result = %#v, exit error = %#v", result, exitError)
 	}
+	details := exitError.DiagnosticDetails()
+	for _, want := range []string{"exit_code: 23", "stderr:\nfailed", "-test.run=TestProcessHelper"} {
+		if !strings.Contains(details, want) {
+			t.Errorf("diagnostic details do not contain %q:\n%s", want, details)
+		}
+	}
 }
 
 func TestRunnerBoundsBothOutputStreams(t *testing.T) {
@@ -78,24 +84,96 @@ func TestRunnerBoundsBothOutputStreams(t *testing.T) {
 	}
 }
 
+func TestRunnerCanReplaceTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("AWDEV_UNRELATED_SECRET", "must-not-leak")
+	result, err := processrun.NewRunner().Run(context.Background(), processrun.Request{
+		Argv:             helperArgv("environment"),
+		CleanEnvironment: true,
+		Environment:      map[string]string{"AWDEV_WORKER": "1"},
+	})
+	if err != nil {
+		t.Fatalf("run helper: %v", err)
+	}
+	if got, want := string(result.Stdout), "AWDEV_WORKER=1"; got != want {
+		t.Fatalf("environment = %q, want %q", got, want)
+	}
+}
+
 func TestRunnerCancellationTerminatesProcessGroup(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "descendant-finished")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	directory := t.TempDir()
+	childReady := filepath.Join(directory, "child-ready")
+	grandchildReady := filepath.Join(directory, "grandchild-ready")
+	childSurvived := filepath.Join(directory, "child-survived")
+	grandchildSurvived := filepath.Join(directory, "grandchild-survived")
+	ctx, cancel := context.WithCancel(context.Background())
 	runner := processrun.NewRunner()
 	runner.KillGrace = 50 * time.Millisecond
 	started := time.Now()
-	_, err := runner.Run(ctx, processrun.Request{Argv: helperArgv("tree", marker)})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want deadline exceeded", err)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ctx, processrun.Request{Argv: helperArgv("tree", childReady, grandchildReady, childSurvived, grandchildSurvived)})
+		done <- err
+	}()
+	waitForFiles(t, childReady, grandchildReady)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want canceled", err)
 	}
 	if time.Since(started) > 2*time.Second {
 		t.Fatalf("cancellation took too long: %s", time.Since(started))
 	}
 	time.Sleep(500 * time.Millisecond)
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("descendant survived cancellation and wrote marker: %v", err)
+	for _, marker := range []string{childSurvived, grandchildSurvived} {
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("process descendant survived cancellation and wrote %s: %v", marker, err)
+		}
 	}
+}
+
+func TestRunnerCancellationPreservesPartialDiagnostics(t *testing.T) {
+	directory := t.TempDir()
+	ready := filepath.Join(directory, "ready")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := processrun.NewRunner().Run(ctx, processrun.Request{Argv: helperArgv("cancel-output", ready)})
+		done <- err
+	}()
+	waitForFiles(t, ready)
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want canceled", err)
+	}
+	var diagnostic interface{ DiagnosticDetails() string }
+	if !errors.As(err, &diagnostic) {
+		t.Fatalf("error = %T %v, want diagnostic details", err, err)
+	}
+	details := diagnostic.DiagnosticDetails()
+	for _, want := range []string{"stdout:\npartial stdout", "stderr:\npartial stderr", "termination_timed_out: false"} {
+		if !strings.Contains(details, want) {
+			t.Errorf("diagnostic details do not contain %q:\n%s", want, details)
+		}
+	}
+}
+
+func waitForFiles(t *testing.T, paths ...string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		allExist := true
+		for _, path := range paths {
+			if _, err := os.Stat(path); err != nil {
+				allExist = false
+				break
+			}
+		}
+		if allExist {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process tree did not become ready: %v", paths)
 }
 
 func helperArgv(arguments ...string) []string {
@@ -127,21 +205,35 @@ func TestProcessHelper(t *testing.T) {
 	case "output":
 		fmt.Fprint(os.Stdout, "abcdefghijklmnopqrstuvwxyz")
 		fmt.Fprint(os.Stderr, "0123456789")
+	case "environment":
+		fmt.Fprint(os.Stdout, strings.Join(os.Environ(), "\n"))
+	case "cancel-output":
+		fmt.Fprint(os.Stdout, "partial stdout")
+		fmt.Fprint(os.Stderr, "partial stderr")
+		_ = os.WriteFile(arguments[1], []byte("ready"), 0o600)
+		time.Sleep(24 * time.Hour)
 	case "tree":
-		if os.Getenv("AWDEV_DESCENDANT") == "1" {
-			signal.Ignore(syscall.SIGTERM)
-			for {
-				time.Sleep(400 * time.Millisecond)
-				_ = os.WriteFile(arguments[1], []byte("survived"), 0o644)
-			}
-		}
-		command := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--", "tree", arguments[1])
-		command.Env = append(os.Environ(), "AWDEV_DESCENDANT=1")
+		command := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--", "tree-child", arguments[1], arguments[2], arguments[3], arguments[4])
 		if err := command.Start(); err != nil {
 			os.Exit(2)
 		}
-		_ = syscall.Kill(command.Process.Pid, syscall.SIGCONT)
 		_ = command.Wait()
+	case "tree-child":
+		signal.Ignore(syscall.SIGTERM)
+		_ = os.WriteFile(arguments[1], []byte("ready"), 0o600)
+		command := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--", "tree-grandchild", arguments[2], arguments[4])
+		if err := command.Start(); err != nil {
+			os.Exit(2)
+		}
+		time.Sleep(400 * time.Millisecond)
+		_ = os.WriteFile(arguments[3], []byte("survived"), 0o600)
+		_ = command.Wait()
+	case "tree-grandchild":
+		signal.Ignore(syscall.SIGTERM)
+		_ = os.WriteFile(arguments[1], []byte("ready"), 0o600)
+		time.Sleep(400 * time.Millisecond)
+		_ = os.WriteFile(arguments[2], []byte("survived"), 0o600)
+		select {}
 	}
 	os.Exit(0)
 }

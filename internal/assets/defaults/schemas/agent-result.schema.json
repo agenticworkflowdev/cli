@@ -2,24 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agenticworkflow.dev/schemas/agent-result.schema.json",
   "title": "Agent result",
-  "oneOf": [
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["status", "summary"],
-      "properties": {
-        "status": {"const": "completed"},
-        "summary": {"type": "string", "minLength": 1}
-      }
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "question"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked"]
     },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["status", "question"],
-      "properties": {
-        "status": {"const": "blocked"},
-        "question": {"type": "string", "minLength": 1}
-      }
+    "summary": {
+      "type": "string",
+      "description": "A non-empty completion summary when status is completed; otherwise an empty string."
+    },
+    "question": {
+      "type": "string",
+      "description": "A non-empty question when status is blocked; otherwise an empty string."
     }
-  ]
+  }
 }

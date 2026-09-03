@@ -133,6 +133,22 @@ esac
 	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}
+	codexPath := filepath.Join(binDirectory, "codex")
+	codexScript := `#!/bin/sh
+output=
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "--output-last-message" ]; then output="$argument"; fi
+  previous="$argument"
+done
+mkdir -p "$PWD/.awdev/specs"
+printf '%s\n' '# Generated specification' > "$PWD/.awdev/specs/gh-17-a-title.md"
+printf '%s' '{"status":"completed","summary":"Specification written","question":""}' > "$output"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn.completed"}'
+`
+	if err := os.WriteFile(codexPath, []byte(codexScript), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Chdir(repository)
 
@@ -143,9 +159,6 @@ esac
 	root.SetArgs([]string{"run", "github", "17"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute run: %v", err)
-	}
-	if got, want := output.String(), "GitHub issue: #17\nWorktree: gh-17-a-title\nBranch: gh-17-a-title\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
 	}
 	canonicalRepository, err := filepath.EvalSymlinks(repository)
 	if err != nil {
@@ -160,14 +173,28 @@ esac
 		t.Fatal("saved manifest was not found by issue identity")
 	}
 	manifest := *existing.Manifest
-	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != worktree || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseInit || manifest.Status != state.StatusRunning {
+	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseSpec || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
 		t.Fatalf("saved manifest = %#v", manifest)
+	}
+	wantOutput := "Creating specification with Codex. This can take a few minutes...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
+	if got := output.String(); got != wantOutput {
+		t.Fatalf("output = %q, want %q", got, wantOutput)
+	}
+	specificationContents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(manifest.SpecificationPath)))
+	if err != nil {
+		t.Fatalf("read generated specification: %v", err)
+	}
+	if string(specificationContents) != "# Generated specification\n" {
+		t.Fatalf("generated specification = %q", specificationContents)
 	}
 	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got != baseSHA {
 		t.Fatalf("worktree HEAD = %q, want %q", got, baseSHA)
 	}
-	if got := gitOutputIn(t, worktree, "branch", "--show-current"); got != "gh-17-a-title" {
-		t.Fatalf("worktree branch = %q", got)
+	if got := gitOutputIn(t, worktree, "branch", "--show-current"); got != "" {
+		t.Fatalf("worktree branch = %q, want detached HEAD", got)
+	}
+	if got := gitOutputIn(t, repository, "rev-parse", "gh-17-a-title"); got != baseSHA {
+		t.Fatalf("workflow branch HEAD = %q, want %q", got, baseSHA)
 	}
 	if got := gitOutputIn(t, repository, "branch", "--show-current"); got != "main" {
 		t.Fatalf("controller branch changed to %q", got)
@@ -195,7 +222,7 @@ func TestRunGitHubReportsExistingManifestWithoutGitHub(t *testing.T) {
 		Status:        state.StatusFailed,
 		Branch:        "gh-17-title",
 		BaseSHA:       strings.Repeat("a", 40),
-		Worktree:      filepath.Join(repository, ".awdev", "worktrees", "gh-17-title"),
+		Worktree:      ".awdev/worktrees/gh-17-title",
 		LastError:     &state.WorkflowError{Code: "technical_failure", Message: "safe failure"},
 	}
 	if err := state.NewStore().Save(repository, manifest); err != nil {

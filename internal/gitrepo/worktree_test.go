@@ -82,6 +82,12 @@ func TestWorktreeManagerCreatesAndExactlyReentersPinnedWorktree(t *testing.T) {
 	if got := gitOutput(t, wantPath, "rev-parse", "HEAD"); got != baseSHA {
 		t.Fatalf("worktree HEAD = %q, want %q", got, baseSHA)
 	}
+	if got := gitOutput(t, wantPath, "branch", "--show-current"); got != "" {
+		t.Fatalf("worktree branch = %q, want detached HEAD", got)
+	}
+	if got := gitOutput(t, controller, "rev-parse", created.Branch); got != baseSHA {
+		t.Fatalf("workflow branch HEAD = %q, want %q", got, baseSHA)
+	}
 	if got := gitOutput(t, controller, "status", "--porcelain"); got != "" {
 		t.Fatalf("controller checkout was modified: %q", got)
 	}
@@ -105,7 +111,7 @@ func TestWorktreeManagerCreatesAndExactlyReentersPinnedWorktree(t *testing.T) {
 	}
 }
 
-func TestWorktreeManagerReportsStaleRegistrationWithMissingFolder(t *testing.T) {
+func TestWorktreeManagerRepairsItsMissingDetachedRegistration(t *testing.T) {
 	controller, _ := newRemoteRepository(t)
 	created, err := prepareTitleWorktree(controller)
 	if err != nil {
@@ -115,10 +121,37 @@ func TestWorktreeManagerReportsStaleRegistrationWithMissingFolder(t *testing.T) 
 		t.Fatalf("remove worktree folder: %v", err)
 	}
 
-	_, err = prepareTitleWorktree(controller)
-	want := "deterministic worktree state is incomplete:\n- folder: missing (" + created.AbsolutePath + ")\n- worktree: stale\n- branch: exists (" + created.Branch + ")"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %q, want status block %q", err, want)
+	recreated, err := prepareTitleWorktree(controller)
+	if err != nil {
+		t.Fatalf("repair missing detached worktree: %v", err)
+	}
+	if recreated != created {
+		t.Fatalf("recreated worktree = %#v, want %#v", recreated, created)
+	}
+	if got := gitOutput(t, recreated.AbsolutePath, "branch", "--show-current"); got != "" {
+		t.Fatalf("recreated worktree branch = %q, want detached HEAD", got)
+	}
+}
+
+func TestDeletingAWDevDoesNotPreventWorkflowBranchDeletion(t *testing.T) {
+	controller, _ := newRemoteRepository(t)
+	created, err := prepareTitleWorktree(controller)
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(controller, ".awdev")); err != nil {
+		t.Fatalf("delete .awdev: %v", err)
+	}
+	command := exec.Command("git", "branch", "-D", created.Branch)
+	command.Dir = controller
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("delete workflow branch after .awdev removal: %v: %s", err, output)
+	}
+	if err := os.MkdirAll(filepath.Join(controller, ".awdev", "worktrees"), 0o755); err != nil {
+		t.Fatalf("recreate controller directories: %v", err)
+	}
+	if _, err := prepareTitleWorktree(controller); err != nil {
+		t.Fatalf("recreate workflow after .awdev removal: %v", err)
 	}
 }
 
@@ -375,7 +408,7 @@ func (runner *recordingGitRunner) Run(ctx context.Context, request processrun.Re
 
 func assertSafeGitRequests(t *testing.T, requests []processrun.Request, hostileTitle string, worktree gitrepo.Worktree) {
 	t.Helper()
-	fetchIndex, addIndex := -1, -1
+	fetchIndex, addIndex, branchIndex := -1, -1, -1
 	for index, request := range requests {
 		if len(request.Argv) == 0 || request.Argv[0] != "git" {
 			t.Fatalf("unsafe executable argv: %#v", request.Argv)
@@ -391,16 +424,19 @@ func assertSafeGitRequests(t *testing.T, requests []processrun.Request, hostileT
 		if containsSequence(request.Argv, "fetch", "--no-tags", "origin") {
 			fetchIndex = index
 		}
-		if containsSequence(request.Argv, "worktree", "add", "-b") {
+		if containsSequence(request.Argv, "worktree", "add", "--detach") {
 			addIndex = index
-			want := []string{"git", "worktree", "add", "-b", worktree.Branch, worktree.AbsolutePath, worktree.BaseSHA}
+			want := []string{"git", "worktree", "add", "--detach", worktree.AbsolutePath, worktree.BaseSHA}
 			if !reflect.DeepEqual(request.Argv, want) {
 				t.Fatalf("worktree add argv = %#v, want %#v", request.Argv, want)
 			}
 		}
+		if reflect.DeepEqual(request.Argv, []string{"git", "branch", worktree.Branch, worktree.BaseSHA}) {
+			branchIndex = index
+		}
 	}
-	if fetchIndex < 0 || addIndex <= fetchIndex {
-		t.Fatalf("Git ordering did not fetch before creation: fetch=%d add=%d", fetchIndex, addIndex)
+	if fetchIndex < 0 || addIndex <= fetchIndex || branchIndex <= addIndex {
+		t.Fatalf("Git ordering did not fetch, add detached worktree, then create branch: fetch=%d add=%d branch=%d", fetchIndex, addIndex, branchIndex)
 	}
 }
 

@@ -126,6 +126,6 @@ func statusManifest(root string) state.Manifest {
 		Status:        state.StatusRunning,
 		Branch:        "gh-17-a-title",
 		BaseSHA:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Worktree:      root + "/.awdev/worktrees/gh-17-a-title",
+		Worktree:      ".awdev/worktrees/gh-17-a-title",
 	}
 }

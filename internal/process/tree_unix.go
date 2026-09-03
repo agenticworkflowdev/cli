@@ -12,10 +12,10 @@ func configureProcessTree(command *exec.Cmd) error {
 	return nil
 }
 
-func terminateProcessTree(pid int, force bool) {
+func terminateProcessTree(pid int, force bool) error {
 	signal := syscall.SIGTERM
 	if force {
 		signal = syscall.SIGKILL
 	}
-	_ = syscall.Kill(-pid, signal)
+	return syscall.Kill(-pid, signal)
 }

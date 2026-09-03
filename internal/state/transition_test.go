@@ -216,14 +216,15 @@ func TestTransitionAllowsSpecificationPathToBeRecordedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := current
-	next.SpecificationPath = ".awdev/specs/" + current.WorkflowID + ".md"
+	next.SpecificationPath = ".awdev/specs/" + current.Branch + ".md"
 	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, next); err == nil {
 		t.Fatal("recorded specification path before the specification existed")
 	}
-	if err := os.MkdirAll(filepath.Join(root, ".awdev", "specs"), 0o755); err != nil {
+	worktree := absoluteManifestWorktree(t, root, current)
+	if err := os.MkdirAll(filepath.Join(worktree, ".awdev", "specs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(next.SpecificationPath)), []byte("# Specification\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(worktree, filepath.FromSlash(next.SpecificationPath)), []byte("# Specification\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, next); err != nil {

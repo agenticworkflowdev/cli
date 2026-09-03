@@ -79,6 +79,27 @@ func TestStoreRejectsSymlinkedStateDirectoriesBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsSymlinkedControllerWorktreeDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".awdev"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, ".awdev", "worktrees")); err != nil {
+		t.Fatal(err)
+	}
+	manifest := validManifest(root)
+	if err := state.NewStore().Save(root, manifest); err == nil || !strings.Contains(err.Error(), "worktree directory") {
+		t.Fatalf("symlinked worktree directory error = %v", err)
+	}
+	manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manifestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifest was persisted through symlinked worktree directory: %v", err)
+	}
+}
+
 func TestStoreToleratesConcurrentStateDirectoryCreation(t *testing.T) {
 	root := t.TempDir()
 	manifest := validManifest(root)
@@ -98,16 +119,33 @@ func TestStoreToleratesConcurrentStateDirectoryCreation(t *testing.T) {
 func TestStoreRequiresSpecificationFileBeforeRecordingItsPath(t *testing.T) {
 	root := t.TempDir()
 	manifest := validManifest(root)
-	manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
+	manifest.SpecificationPath = ".awdev/specs/" + manifest.Branch + ".md"
 	store := state.NewStore()
 
 	if err := store.Save(root, manifest); err == nil || !strings.Contains(err.Error(), "specification file does not exist") {
 		t.Fatalf("save without specification error = %v", err)
 	}
+	// A controller-side lookalike must not satisfy the worktree postcondition.
 	if err := os.MkdirAll(filepath.Join(root, ".awdev", "specs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(manifest.SpecificationPath)), []byte("# Specification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(root, manifest); err == nil || !strings.Contains(err.Error(), "specification file does not exist") {
+		t.Fatalf("controller-side specification satisfied worktree state: %v", err)
+	}
+	worktree := absoluteManifestWorktree(t, root, manifest)
+	if err := os.MkdirAll(filepath.Join(worktree, ".awdev", "specs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, filepath.FromSlash(manifest.SpecificationPath)), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(root, manifest); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty worktree specification satisfied state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, filepath.FromSlash(manifest.SpecificationPath)), []byte("# Specification\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save(root, manifest); err != nil {
@@ -136,16 +174,16 @@ func TestStoreRejectsNonRegularSpecificationPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
-		"symlinked parent": func(t *testing.T, root, specificationPath string) {
+		"symlinked parent": func(t *testing.T, _ string, specificationPath string) {
 			t.Helper()
-			if err := os.Mkdir(filepath.Join(root, ".awdev"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(filepath.Dir(specificationPath)), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			outside := t.TempDir()
 			if err := os.WriteFile(filepath.Join(outside, filepath.Base(specificationPath)), []byte("# Outside\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(outside, filepath.Join(root, ".awdev", "specs")); err != nil {
+			if err := os.Symlink(outside, filepath.Dir(specificationPath)); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -155,8 +193,8 @@ func TestStoreRejectsNonRegularSpecificationPaths(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			manifest := validManifest(root)
-			manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
-			specificationPath := filepath.Join(root, filepath.FromSlash(manifest.SpecificationPath))
+			manifest.SpecificationPath = ".awdev/specs/" + manifest.Branch + ".md"
+			specificationPath := filepath.Join(absoluteManifestWorktree(t, root, manifest), filepath.FromSlash(manifest.SpecificationPath))
 			setup(t, root, specificationPath)
 			if err := state.NewStore().Save(root, manifest); err == nil {
 				t.Fatal("non-regular specification path was accepted")

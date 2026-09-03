@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -46,7 +45,10 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 				return err
 			}
 			if operation == OperationRun && item.Source == SourceGitHub && services.RunGitHub != nil {
-				result, err := services.RunGitHub(command.Context(), root, item.Number)
+				progress := func(message string) {
+					_, _ = fmt.Fprintln(command.ErrOrStderr(), message)
+				}
+				result, err := services.RunGitHub(command.Context(), root, item.Number, progress)
 				if err != nil {
 					return err
 				}
@@ -89,14 +91,23 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 		)
 		return err
 	}
-	_, err := fmt.Fprintf(
+	if result.Manifest == nil {
+		return errors.New("completed GitHub run result is missing its manifest")
+	}
+	if _, err := fmt.Fprintf(
 		command.OutOrStdout(),
 		"GitHub issue: #%d\nWorktree: %s\nBranch: %s\n",
 		result.Snapshot.Issue.Number,
-		filepath.Base(result.Worktree.AbsolutePath),
+		result.Manifest.Worktree,
 		result.Worktree.Branch,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if result.Manifest.SpecificationPath != "" {
+		_, err := fmt.Fprintf(command.OutOrStdout(), "Specification: %s\n", result.Manifest.SpecificationPath)
+		return err
+	}
+	return nil
 }
 
 type publicIssueStatus struct {

@@ -4,7 +4,9 @@ go 1.26.6
 
 require (
 	charm.land/huh/v2 v2.0.3
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.42.0
 )
 
 require (
@@ -33,5 +35,5 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 )

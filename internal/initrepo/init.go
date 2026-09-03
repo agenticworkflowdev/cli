@@ -17,6 +17,7 @@ var managedDirectories = []string{
 	".awdev",
 	".awdev/issues",
 	".awdev/locks",
+	".awdev/logs",
 	".awdev/prompts",
 	".awdev/schemas",
 	".awdev/worktrees",
@@ -25,6 +26,7 @@ var managedDirectories = []string{
 var ignoreEntries = []string{
 	".awdev/issues/",
 	".awdev/locks/",
+	".awdev/logs/",
 	".awdev/worktrees/",
 }
 

@@ -28,7 +28,8 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 		AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title",
 	}}
 	writer := &fakeManifestWriter{events: &events}
-	service := workflow.NewRunService(locker, existing, fetcher, next, writer, generateFixedWorkflowID)
+	specification := &fakeSpecificationCreator{events: &events, writer: writer}
+	service := workflow.NewRunService(locker, existing, fetcher, next, writer, generateFixedWorkflowID, specification)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
@@ -40,10 +41,10 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	if result.Worktree != next.result {
 		t.Fatalf("result worktree = %#v, want %#v", result.Worktree, next.result)
 	}
-	if result.Manifest == nil || result.Manifest.Issue.Body != validSnapshot().Issue.Body || result.Manifest.Phase != state.PhaseInit || result.Manifest.Status != state.StatusRunning || result.Manifest.SpecificationPath != "" {
-		t.Fatalf("initial manifest = %#v", result.Manifest)
+	if result.Manifest == nil || result.Manifest.Issue.Body != validSnapshot().Issue.Body || result.Manifest.Phase != state.PhaseSpec || result.Manifest.Status != state.StatusRunning || result.Manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
+		t.Fatalf("completed specification manifest = %#v", result.Manifest)
 	}
-	want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "unlock"}
+	want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "specification", "unlock"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -78,6 +79,7 @@ func TestRunGitHubRejectsInvalidSnapshotBeforeContinuation(t *testing.T) {
 				next,
 				&fakeManifestWriter{events: &events},
 				generateFixedWorkflowID,
+				&fakeSpecificationCreator{events: &events},
 			)
 			_, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err == nil || !strings.Contains(err.Error(), test.wantText) {
@@ -106,6 +108,7 @@ func TestRunGitHubExistingManifestShortCircuitsFetchAndContinuation(t *testing.T
 				next,
 				&fakeManifestWriter{events: &events},
 				generateFixedWorkflowID,
+				&fakeSpecificationCreator{events: &events},
 			)
 			result, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err != nil {
@@ -138,6 +141,7 @@ func TestRunGitHubRechecksManifestAfterAcquiringLock(t *testing.T) {
 		&fakeBootstrapper{events: &events},
 		&fakeManifestWriter{events: &events},
 		generateFixedWorkflowID,
+		&fakeSpecificationCreator{events: &events},
 	)
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
@@ -161,6 +165,7 @@ func TestRunGitHubRequiresWorktreeBootstrapperForNewWorkflow(t *testing.T) {
 		nil,
 		nil,
 		generateFixedWorkflowID,
+		nil,
 	)
 	_, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err == nil || !strings.Contains(err.Error(), "not fully configured") {
@@ -182,6 +187,7 @@ func TestRunGitHubPersistsOnlyAfterValidatedWorktreeAndReportsPersistenceFailure
 			&fakeBootstrapper{events: &events, err: errors.New("worktree invalid")},
 			writer,
 			generateFixedWorkflowID,
+			&fakeSpecificationCreator{events: &events},
 		)
 		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil {
 			t.Fatal("worktree failure was ignored")
@@ -203,6 +209,7 @@ func TestRunGitHubPersistsOnlyAfterValidatedWorktreeAndReportsPersistenceFailure
 			}},
 			writer,
 			generateFixedWorkflowID,
+			&fakeSpecificationCreator{events: &events},
 		)
 		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil || !strings.Contains(err.Error(), "persist initial workflow manifest") {
 			t.Fatalf("error = %v, want persistence failure", err)
@@ -297,6 +304,29 @@ func (writer *fakeManifestWriter) Save(_ string, manifest state.Manifest) error 
 	writer.manifest = manifest
 	*writer.events = append(*writer.events, "manifest:"+manifest.WorkflowID)
 	return writer.err
+}
+
+type fakeSpecificationCreator struct {
+	events *[]string
+	writer *fakeManifestWriter
+	called bool
+	err    error
+}
+
+func (creator *fakeSpecificationCreator) Create(_ context.Context, _ string, workflowID string) (workflow.SpecificationResult, error) {
+	creator.called = true
+	*creator.events = append(*creator.events, "specification")
+	if creator.err != nil {
+		return workflow.SpecificationResult{}, creator.err
+	}
+	manifest := state.Manifest{WorkflowID: workflowID}
+	if creator.writer != nil {
+		manifest = creator.writer.manifest
+	}
+	manifest.Phase = state.PhaseSpec
+	manifest.Status = state.StatusRunning
+	manifest.SpecificationPath = ".awdev/specs/" + manifest.Branch + ".md"
+	return workflow.SpecificationResult{Manifest: manifest}, nil
 }
 
 func (bootstrapper *fakeBootstrapper) Continue(_ context.Context, bootstrap workflow.Bootstrap) (gitrepo.Worktree, error) {

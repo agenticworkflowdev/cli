@@ -95,11 +95,20 @@ func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
 	if manifest.WorkflowID != workflowID {
 		return Manifest{}, errors.New("workflow manifest identity does not match its state directory")
 	}
+	migrated, err := migrateManifestPaths(controllerRoot, &manifest)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("migrate workflow manifest paths: %w", err)
+	}
 	if err := manifest.Validate(); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
 	}
 	if err := store.validateControllerPaths(controllerRoot, manifest); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
+	}
+	if migrated {
+		if err := store.Save(controllerRoot, manifest); err != nil {
+			return Manifest{}, fmt.Errorf("persist migrated workflow manifest: %w", err)
+		}
 	}
 	return manifest, nil
 }
@@ -109,6 +118,9 @@ func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
 func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	if store == nil || store.filesystem == nil {
 		return errors.New("manifest store is not configured")
+	}
+	if _, err := migrateManifestPaths(controllerRoot, &manifest); err != nil {
+		return fmt.Errorf("normalize workflow manifest paths: %w", err)
 	}
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
@@ -254,41 +266,64 @@ func (store *Store) validateControllerPaths(controllerRoot string, manifest Mani
 	if err != nil {
 		return fmt.Errorf("resolve controller root: %w", err)
 	}
-	worktreeParent := filepath.Dir(manifest.Worktree)
+	for _, directory := range []struct {
+		path  string
+		label string
+	}{
+		{path: filepath.Join(controllerRoot, ".awdev"), label: "controller .awdev directory"},
+		{path: filepath.Join(controllerRoot, ".awdev", "worktrees"), label: "controller worktree directory"},
+	} {
+		info, statErr := store.filesystem.Lstat(directory.path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect %s: %w", directory.label, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s must be a real directory, not a symlink", directory.label)
+		}
+	}
+	absoluteWorktree, err := ResolveWorktreePath(controllerRoot, manifest.Worktree)
+	if err != nil {
+		return err
+	}
+	worktreeParent := filepath.Dir(absoluteWorktree)
 	manifestRoot := filepath.Dir(filepath.Dir(worktreeParent))
 	canonicalManifestRoot, err := filepath.EvalSymlinks(manifestRoot)
 	if err != nil || canonicalManifestRoot != canonicalRoot {
 		return errors.New("manifest worktree is outside the controller-owned worktree directory")
 	}
 	if manifest.SpecificationPath != "" {
-		for _, directory := range []string{
-			filepath.Join(controllerRoot, ".awdev"),
-			filepath.Join(controllerRoot, ".awdev", "specs"),
-		} {
-			info, statErr := store.filesystem.Lstat(directory)
-			if errors.Is(statErr, os.ErrNotExist) {
-				return errors.New("specification file does not exist")
-			}
-			if statErr != nil {
-				return fmt.Errorf("inspect specification directory: %w", statErr)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return errors.New("specification directory must be a real directory, not a symlink")
-			}
-		}
-		specificationPath := filepath.Join(controllerRoot, filepath.FromSlash(manifest.SpecificationPath))
-		info, statErr := store.filesystem.Lstat(specificationPath)
-		if errors.Is(statErr, os.ErrNotExist) {
-			return errors.New("specification file does not exist")
-		}
-		if statErr != nil {
-			return fmt.Errorf("inspect specification file: %w", statErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return errors.New("specification path must reference a regular file, not a symlink")
-		}
+		return verifySpecificationFile(store.filesystem, absoluteWorktree, manifest.SpecificationPath)
 	}
 	return nil
+}
+
+func migrateManifestPaths(controllerRoot string, manifest *Manifest) (bool, error) {
+	if manifest == nil {
+		return false, errors.New("manifest is required")
+	}
+	migrated := false
+	if filepath.IsAbs(manifest.Worktree) {
+		if filepath.Clean(manifest.Worktree) != manifest.Worktree {
+			return false, errors.New("legacy worktree must be an absolute clean path")
+		}
+		relative, err := filepath.Rel(controllerRoot, manifest.Worktree)
+		if err != nil {
+			return false, fmt.Errorf("derive repository-relative legacy worktree: %w", err)
+		}
+		manifest.Worktree = filepath.ToSlash(relative)
+		migrated = true
+	}
+	if manifest.LastError != nil {
+		message := RelativizeControllerPaths(controllerRoot, manifest.LastError.Message)
+		if message != manifest.LastError.Message {
+			manifest.LastError.Message = message
+			migrated = true
+		}
+	}
+	return migrated, nil
 }
 
 // OSFileSystem implements FileSystem with the local operating system.

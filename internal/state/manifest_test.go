@@ -1,6 +1,8 @@
 package state_test
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +40,143 @@ func TestManifestRoundTripPreservesIssueSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesLegacyAbsoluteWorktreePath(t *testing.T) {
+	root := t.TempDir()
+	manifest := validManifest(root)
+	store := state.NewStore()
+	if err := store.Save(root, manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	legacy := manifest
+	legacy.Worktree = filepath.Join(root, filepath.FromSlash(manifest.Worktree))
+	legacy.Phase = state.PhaseSpec
+	legacy.Status = state.StatusFailed
+	legacy.LastError = &state.WorkflowError{
+		Code:    "technical_failure",
+		Message: "details saved at " + filepath.Join(root, ".awdev", "logs", "error-123.log"),
+	}
+	contents, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(contents, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Read(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("read legacy manifest: %v", err)
+	}
+	if got.Worktree != manifest.Worktree {
+		t.Fatalf("migrated worktree = %q, want %q", got.Worktree, manifest.Worktree)
+	}
+	if got.LastError == nil || got.LastError.Message != "details saved at .awdev/logs/error-123.log" {
+		t.Fatalf("migrated last error = %#v", got.LastError)
+	}
+	persisted, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), legacy.Worktree) || !strings.Contains(string(persisted), `"worktree": ".awdev/worktrees/gh-17-a-title"`) {
+		t.Fatalf("legacy worktree path was not rewritten: %s", persisted)
+	}
+}
+
+func TestStoreReadsLegacyWorkflowIDSpecificationFilenameWithoutRenaming(t *testing.T) {
+	root := t.TempDir()
+	manifest := validManifest(root)
+	store := state.NewStore()
+	if err := store.Save(root, manifest); err != nil {
+		t.Fatalf("save initial manifest: %v", err)
+	}
+
+	legacyPath := ".awdev/specs/" + manifest.WorkflowID + ".md"
+	newPath := ".awdev/specs/" + manifest.Branch + ".md"
+	worktree := absoluteManifestWorktree(t, root, manifest)
+	legacyAbsolute := filepath.Join(worktree, filepath.FromSlash(legacyPath))
+	if err := os.MkdirAll(filepath.Dir(legacyAbsolute), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAbsolute, []byte("# Existing specification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy := manifest
+	legacy.Phase = state.PhaseSpec
+	legacy.SpecificationPath = legacyPath
+	contents, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(contents, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Read(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("read existing manifest: %v", err)
+	}
+	if got.SpecificationPath != legacyPath {
+		t.Fatalf("specification path changed to %q, want %q", got.SpecificationPath, legacyPath)
+	}
+	if contents, err := os.ReadFile(legacyAbsolute); err != nil || string(contents) != "# Existing specification\n" {
+		t.Fatalf("existing specification changed: contents=%q err=%v", contents, err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, filepath.FromSlash(newPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("slug-named specification was created for an existing workflow: %v", err)
+	}
+	persisted, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), legacyPath) || strings.Contains(string(persisted), newPath) {
+		t.Fatalf("existing manifest was rewritten: %s", persisted)
+	}
+}
+func TestStoreRelativizesControllerPathsBeforeSaving(t *testing.T) {
+	root := t.TempDir()
+	manifest := validManifest(root)
+	manifest.Phase = state.PhaseSpec
+	manifest.Status = state.StatusFailed
+	manifest.LastError = &state.WorkflowError{
+		Code:    "technical_failure",
+		Message: "details saved at " + filepath.Join(root, ".awdev", "logs", "error-123.log"),
+	}
+	if err := state.NewStore().Save(root, manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), root) || !strings.Contains(string(persisted), ".awdev/logs/error-123.log") {
+		t.Fatalf("manifest contains a non-relative controller path: %s", persisted)
+	}
+}
+
+func TestRelativizeControllerPathsHandlesTheAWDevRootItself(t *testing.T) {
+	root := t.TempDir()
+	if got := state.RelativizeControllerPaths(root, filepath.Join(root, ".awdev")); got != ".awdev" {
+		t.Fatalf("relative controller path = %q, want .awdev", got)
+	}
+	want := "open .awdev: permission denied"
+	if got := state.RelativizeControllerPaths(root, "open "+filepath.Join(root, ".awdev")+": permission denied"); got != want {
+		t.Fatalf("relative controller error = %q, want %q", got, want)
+	}
+}
+
 func TestNewWorkflowIDReturnsOpaqueRandomIdentity(t *testing.T) {
 	first, err := state.NewWorkflowID()
 	if err != nil {
@@ -69,8 +208,11 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 		{name: "repository", edit: func(value *state.Manifest) { value.Repository = "bad" }, want: "repository"},
 		{name: "issue URL", edit: func(value *state.Manifest) { value.Issue.URL = "https://example.com/17" }, want: "issue URL"},
 		{name: "issue state", edit: func(value *state.Manifest) { value.Issue.State = "CLOSED" }, want: "issue state"},
-		{name: "absolute worktree", edit: func(value *state.Manifest) { value.Worktree = "relative" }, want: "worktree"},
-		{name: "worktree shape", edit: func(value *state.Manifest) { value.Worktree = filepath.Join(root, "outside", "gh-17-title") }, want: "worktree"},
+		{name: "absolute worktree", edit: func(value *state.Manifest) {
+			value.Worktree = filepath.Join(root, ".awdev", "worktrees", "gh-17-title")
+		}, want: "worktree"},
+		{name: "worktree shape", edit: func(value *state.Manifest) { value.Worktree = ".awdev/outside/gh-17-title" }, want: "worktree"},
+		{name: "worktree and branch mismatch", edit: func(value *state.Manifest) { value.Branch = "gh-17-other-title" }, want: "must match"},
 		{name: "spec path", edit: func(value *state.Manifest) { value.SpecificationPath = "../escape.md" }, want: "specification"},
 		{name: "base sha", edit: func(value *state.Manifest) { value.BaseSHA = "abc" }, want: "base SHA"},
 		{name: "phase", edit: func(value *state.Manifest) { value.Phase = "unknown" }, want: "phase"},
@@ -193,6 +335,15 @@ func validManifest(root string) state.Manifest {
 		Status:   state.StatusRunning,
 		Branch:   "gh-17-a-title",
 		BaseSHA:  strings.Repeat("a", 40),
-		Worktree: filepath.Join(root, ".awdev", "worktrees", "gh-17-a-title"),
+		Worktree: ".awdev/worktrees/gh-17-a-title",
 	}
+}
+
+func absoluteManifestWorktree(t *testing.T, root string, manifest state.Manifest) string {
+	t.Helper()
+	worktree, err := state.ResolveWorktreePath(root, manifest.Worktree)
+	if err != nil {
+		t.Fatalf("resolve manifest worktree: %v", err)
+	}
+	return worktree
 }

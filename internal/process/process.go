@@ -17,17 +17,19 @@ import (
 const (
 	defaultOutputLimit = 1 << 20
 	defaultKillGrace   = 250 * time.Millisecond
+	defaultKillWait    = 2 * time.Second
 )
 
 // Request describes one direct child-process invocation. Argv contains the
 // executable as its first element and is never interpreted by a shell.
 type Request struct {
-	Directory   string
-	Argv        []string
-	Stdin       []byte
-	Environment map[string]string
-	StdoutLimit int
-	StderrLimit int
+	Directory        string
+	Argv             []string
+	Stdin            []byte
+	Environment      map[string]string
+	CleanEnvironment bool
+	StdoutLimit      int
+	StderrLimit      int
 }
 
 // Result records bounded output and process exit metadata.
@@ -55,10 +57,73 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("%s exited with code %d", e.Argv[0], e.Result.ExitCode)
 }
 
+// DiagnosticDetails returns process output and invocation metadata for local
+// error logs. It is intentionally not part of Error so terminal failures stay
+// concise.
+func (e *ExitError) DiagnosticDetails() string {
+	if e == nil {
+		return ""
+	}
+	return processDiagnosticDetails(e.Argv, e.Result)
+}
+
+// ContextError reports a child terminated because its request context ended,
+// while retaining the output captured before termination for diagnostics.
+type ContextError struct {
+	Argv                   []string
+	Result                 Result
+	Cause                  error
+	PID                    int
+	TerminationTimedOut    bool
+	ForcedTerminationError error
+}
+
+func (e *ContextError) Error() string {
+	if e.TerminationTimedOut {
+		return fmt.Sprintf("run %s: %v; process %d did not exit after forced termination", e.Argv[0], e.Cause, e.PID)
+	}
+	return fmt.Sprintf("run %s: %v", e.Argv[0], e.Cause)
+}
+
+func (e *ContextError) Unwrap() error {
+	return e.Cause
+}
+
+// DiagnosticDetails returns the partial process output captured before
+// cancellation or timeout.
+func (e *ContextError) DiagnosticDetails() string {
+	if e == nil {
+		return ""
+	}
+	details := processDiagnosticDetails(e.Argv, e.Result)
+	details += fmt.Sprintf("pid: %d\ntermination_timed_out: %t\n", e.PID, e.TerminationTimedOut)
+	if e.ForcedTerminationError != nil {
+		details += fmt.Sprintf("forced_termination_error: %v\n", e.ForcedTerminationError)
+	}
+	return details
+}
+
+func processDiagnosticDetails(argv []string, result Result) string {
+	var details strings.Builder
+	fmt.Fprintf(&details, "argv: %q\n", argv)
+	fmt.Fprintf(&details, "exit_code: %d\n", result.ExitCode)
+	fmt.Fprintf(&details, "duration: %s\n", result.Duration)
+	fmt.Fprintf(&details, "stdout_truncated: %t\n", result.StdoutTruncated)
+	fmt.Fprintf(&details, "stderr_truncated: %t\n", result.StderrTruncated)
+	if len(result.Stdout) > 0 {
+		fmt.Fprintf(&details, "stdout:\n%s\n", result.Stdout)
+	}
+	if len(result.Stderr) > 0 {
+		fmt.Fprintf(&details, "stderr:\n%s\n", result.Stderr)
+	}
+	return details.String()
+}
+
 // OSRunner directly executes processes and terminates their process group on
 // cancellation.
 type OSRunner struct {
 	KillGrace time.Duration
+	KillWait  time.Duration
 }
 
 // NewRunner constructs an operating-system process runner with bounded
@@ -84,7 +149,7 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 	command.Stdin = bytes.NewReader(request.Stdin)
 	command.Stdout = stdout
 	command.Stderr = stderr
-	command.Env = mergedEnvironment(request.Environment)
+	command.Env = processEnvironment(request.Environment, request.CleanEnvironment)
 	if err := configureProcessTree(command); err != nil {
 		return Result{ExitCode: -1}, err
 	}
@@ -101,7 +166,7 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 	select {
 	case waitErr = <-waited:
 	case <-ctx.Done():
-		terminateProcessTree(command.Process.Pid, false)
+		_ = terminateProcessTree(command.Process.Pid, false)
 		grace := r.KillGrace
 		if grace <= 0 {
 			grace = defaultKillGrace
@@ -114,12 +179,27 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 			<-timer.C
 		case <-timer.C:
 		}
-		terminateProcessTree(command.Process.Pid, true)
+		forcedTerminationError := terminateProcessTree(command.Process.Pid, true)
+		terminationTimedOut := false
 		if !parentExited {
-			waitErr = <-waited
+			killWait := r.KillWait
+			if killWait <= 0 {
+				killWait = defaultKillWait
+			}
+			killTimer := time.NewTimer(killWait)
+			select {
+			case waitErr = <-waited:
+				killTimer.Stop()
+			case <-killTimer.C:
+				waitErr = ctx.Err()
+				terminationTimedOut = true
+			}
 		}
 		result := processResult(waitErr, stdout, stderr, time.Since(started))
-		return result, fmt.Errorf("run %s: %w", request.Argv[0], ctx.Err())
+		return result, &ContextError{
+			Argv: append([]string(nil), request.Argv...), Result: result, Cause: ctx.Err(), PID: command.Process.Pid,
+			TerminationTimedOut: terminationTimedOut, ForcedTerminationError: forcedTerminationError,
+		}
 	}
 
 	result := processResult(waitErr, stdout, stderr, time.Since(started))
@@ -148,8 +228,11 @@ func processResult(waitErr error, stdout, stderr *boundedBuffer, duration time.D
 	}
 }
 
-func mergedEnvironment(additions map[string]string) []string {
-	environment := append([]string(nil), os.Environ()...)
+func processEnvironment(additions map[string]string, clean bool) []string {
+	var environment []string
+	if !clean {
+		environment = append([]string(nil), os.Environ()...)
+	}
 	keys := make([]string, 0, len(additions))
 	for key := range additions {
 		keys = append(keys, key)

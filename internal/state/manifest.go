@@ -183,16 +183,21 @@ func (manifest Manifest) Validate() error {
 	if !validObjectID(manifest.BaseSHA) {
 		return errors.New("base SHA must be a full lowercase Git object ID")
 	}
-	if !filepath.IsAbs(manifest.Worktree) || filepath.Clean(manifest.Worktree) != manifest.Worktree || strings.ContainsRune(manifest.Worktree, '\x00') {
-		return errors.New("worktree must be an absolute clean path")
+	if filepath.IsAbs(manifest.Worktree) || path.IsAbs(manifest.Worktree) || path.Clean(manifest.Worktree) != manifest.Worktree || strings.ContainsAny(manifest.Worktree, "\\\x00") {
+		return errors.New("worktree must be a clean repository-relative path")
 	}
-	worktreeParent := filepath.Dir(manifest.Worktree)
+	worktreeParent := path.Dir(manifest.Worktree)
 	issueKey, _ := GitHubIssueKey(manifest.Issue.Number)
-	if filepath.Base(worktreeParent) != "worktrees" || filepath.Base(filepath.Dir(worktreeParent)) != ".awdev" || !strings.HasPrefix(filepath.Base(manifest.Worktree), issueKey+"-") {
+	worktreeName := path.Base(manifest.Worktree)
+	if worktreeParent != path.Join(".awdev", "worktrees") || !strings.HasPrefix(worktreeName, issueKey+"-") {
 		return errors.New("worktree must be an issue-derived path under .awdev/worktrees")
 	}
-	wantSpecificationPath := path.Join(".awdev", "specs", manifest.WorkflowID+".md")
-	if manifest.SpecificationPath != "" && manifest.SpecificationPath != wantSpecificationPath {
+	if manifest.Branch != worktreeName {
+		return errors.New("workflow branch must match the issue-derived worktree name")
+	}
+	wantSpecificationPath, _ := SpecificationPathForBranch(manifest.Branch)
+	legacySpecificationPath := path.Join(".awdev", "specs", manifest.WorkflowID+".md")
+	if manifest.SpecificationPath != "" && manifest.SpecificationPath != wantSpecificationPath && manifest.SpecificationPath != legacySpecificationPath {
 		return fmt.Errorf("specification path must be %q", wantSpecificationPath)
 	}
 	if manifest.Review != nil {
@@ -248,6 +253,47 @@ func (manifest Manifest) Validate() error {
 		return errors.New("pull request is only valid during pull_request or done")
 	}
 	return nil
+}
+
+// ResolveWorktreePath converts a validated manifest worktree path into the
+// absolute path required by filesystem and child-process boundaries.
+func ResolveWorktreePath(controllerRoot, relativePath string) (string, error) {
+	if !filepath.IsAbs(controllerRoot) || filepath.Clean(controllerRoot) != controllerRoot {
+		return "", errors.New("controller root must be an absolute clean path")
+	}
+	if filepath.IsAbs(relativePath) || path.IsAbs(relativePath) || path.Clean(relativePath) != relativePath || strings.ContainsAny(relativePath, "\\\x00") {
+		return "", errors.New("worktree must be a clean repository-relative path")
+	}
+	if path.Dir(relativePath) != path.Join(".awdev", "worktrees") {
+		return "", errors.New("worktree must be under .awdev/worktrees")
+	}
+	return filepath.Join(controllerRoot, filepath.FromSlash(relativePath)), nil
+}
+
+// SpecificationPathForBranch returns the stable worktree-relative path for a
+// workflow branch's implementation specification.
+func SpecificationPathForBranch(branch string) (string, error) {
+	if !validGitRef(branch) || path.Base(branch) != branch {
+		return "", errors.New("workflow branch must be a single safe path component")
+	}
+	return path.Join(".awdev", "specs", branch+".md"), nil
+}
+
+// RelativizeControllerPaths replaces absolute paths beneath the controller's
+// .awdev directory with their stable repository-relative representation.
+func RelativizeControllerPaths(controllerRoot, value string) string {
+	absoluteAWDev := filepath.Join(filepath.Clean(controllerRoot), ".awdev")
+	if value == absoluteAWDev {
+		return ".awdev"
+	}
+	value = strings.ReplaceAll(value, absoluteAWDev+string(filepath.Separator), ".awdev"+string(filepath.Separator))
+	for _, boundary := range []string{" ", "\t", "\r", "\n", ":", ",", ";", ")", "]", "}", `"`, `'`} {
+		value = strings.ReplaceAll(value, absoluteAWDev+boundary, ".awdev"+boundary)
+	}
+	if strings.HasSuffix(value, absoluteAWDev) {
+		value = strings.TrimSuffix(value, absoluteAWDev) + ".awdev"
+	}
+	return filepath.ToSlash(value)
 }
 
 func validatePhaseStatus(phase Phase, status Status) error {

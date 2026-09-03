@@ -15,8 +15,8 @@ func configureProcessTree(command *exec.Cmd) error {
 	return nil
 }
 
-func terminateProcessTree(pid int, force bool) {
+func terminateProcessTree(pid int, force bool) error {
 	// taskkill's tree traversal requires the group leader to remain addressable,
 	// so terminate the complete tree immediately on Windows for both passes.
-	_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
+	return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
 }

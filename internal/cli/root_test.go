@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -409,7 +408,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 		WorkingDirectory: func() (string, error) { return "/repo", nil },
 		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateConfig:   func(string) error { return nil },
-		RunGitHub: func(_ context.Context, root string, number int) (workflow.RunResult, error) {
+		RunGitHub: func(_ context.Context, root string, number int, _ cli.ProgressReporter) (workflow.RunResult, error) {
 			if root != "/repo" || number != 17 {
 				t.Fatalf("run service inputs = %q, %d", root, number)
 			}
@@ -426,6 +425,10 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 					BaseSHA:      strings.Repeat("a", 40),
 					AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title",
 				},
+				Manifest: &state.Manifest{
+					Worktree:          ".awdev/worktrees/gh-17-a-title",
+					SpecificationPath: ".awdev/specs/gh-17-a-title.md",
+				},
 			}, nil
 		},
 		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
@@ -439,7 +442,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "GitHub issue: #17\nWorktree: gh-17-a-title\nBranch: gh-17-a-title\n"; got != want {
+	if got, want := output.String(), "GitHub issue: #17\nWorktree: .awdev/worktrees/gh-17-a-title\nBranch: gh-17-a-title\nSpecification: .awdev/specs/gh-17-a-title.md\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
@@ -450,7 +453,7 @@ func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
 		WorkingDirectory: func() (string, error) { return "/repo", nil },
 		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateConfig:   func(string) error { return nil },
-		RunGitHub: func(context.Context, string, int) (workflow.RunResult, error) {
+		RunGitHub: func(context.Context, string, int, cli.ProgressReporter) (workflow.RunResult, error) {
 			return workflow.RunResult{
 				WorkflowID: cliTestWorkflowID,
 				Outcome:    workflow.RunExisting,
@@ -467,6 +470,34 @@ func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
 	}
 	if got, want := output.String(), "Workflow "+cliTestWorkflowID+" already exists: spec/blocked.\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunGitHubProvidesAVisibleProgressWriterToTheService(t *testing.T) {
+	var output bytes.Buffer
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		RunGitHub: func(_ context.Context, _ string, _ int, progress cli.ProgressReporter) (workflow.RunResult, error) {
+			want := "agent progress\n"
+			progress("agent progress")
+			if got := output.String(); got != want {
+				t.Fatalf("visible progress output = %q, want %q", got, want)
+			}
+			return workflow.RunResult{
+				WorkflowID: cliTestWorkflowID,
+				Outcome:    workflow.RunExisting,
+				Existing:   state.ExistingWorkflow{Exists: true, Manifest: &state.Manifest{Phase: "spec", Status: "running"}},
+			}, nil
+		},
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(&output)
+	command.SetErr(&output)
+	command.SetArgs([]string{"run", "github", "17"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("run command: %v", err)
 	}
 }
 
@@ -658,6 +689,6 @@ func cliStatusManifest() state.Manifest {
 		Status:        state.StatusRunning,
 		Branch:        "gh-17-a-title",
 		BaseSHA:       strings.Repeat("a", 40),
-		Worktree:      filepath.Join("/repo", ".awdev", "worktrees", "gh-17-a-title"),
+		Worktree:      ".awdev/worktrees/gh-17-a-title",
 	}
 }
