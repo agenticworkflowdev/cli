@@ -9,11 +9,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/app"
 	"github.com/agenticworkflowdev/cli/internal/config"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
 func TestInitCommandInitializesOriginalRepositoryFromNestedDirectory(t *testing.T) {
@@ -46,7 +48,7 @@ func TestInitCommandInitializesOriginalRepositoryFromNestedDirectory(t *testing.
 	if configuration.Agent.Provider != agent.ProviderCodex {
 		t.Fatalf("configured provider = %q, want codex", configuration.Agent.Provider)
 	}
-	for _, want := range []string{"Select the AI:", "Created .awdev/.", "Created .gitignore", "Initialization complete. awdev is configured to use Codex."} {
+	for _, want := range []string{"Select the AI:", "Created .awdev/\n", "Created .gitignore", "Initialization complete. AWDev is configured to use Codex.\n"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("init output %q does not contain %q", output.String(), want)
 		}
@@ -91,7 +93,7 @@ func TestInitRejectsInvalidExistingConfigBeforeFilesystemChanges(t *testing.T) {
 	}
 }
 
-func TestRunGitHubCreatesValidatedWorktreeWithoutManifest(t *testing.T) {
+func TestRunGitHubCreatesValidatedWorktreeThenSavesManifest(t *testing.T) {
 	repository := t.TempDir()
 	command := exec.Command("git", "init", "--quiet", repository)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -142,15 +144,25 @@ esac
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute run: %v", err)
 	}
-	for _, want := range []string{"Prepared worktree gh-17-a-title", "pinned to " + baseSHA, "for GitHub issue owner/repository#17"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("output = %q, want substring %q", output.String(), want)
-		}
+	if got, want := output.String(), "GitHub issue: #17\nWorktree: gh-17-a-title\nBranch: gh-17-a-title\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(repository, ".awdev", "issues", "gh-17", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("manifest unexpectedly exists: %v", err)
+	canonicalRepository, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		t.Fatal(err)
 	}
-	worktree := filepath.Join(repository, ".awdev", "worktrees", "gh-17-a-title")
+	worktree := filepath.Join(canonicalRepository, ".awdev", "worktrees", "gh-17-a-title")
+	existing, err := state.NewManifestReader().ReadExisting(repository, 17)
+	if err != nil {
+		t.Fatalf("read saved manifest: %v", err)
+	}
+	if !existing.Exists || existing.Manifest == nil {
+		t.Fatal("saved manifest was not found by issue identity")
+	}
+	manifest := *existing.Manifest
+	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != worktree || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseInit || manifest.Status != state.StatusRunning {
+		t.Fatalf("saved manifest = %#v", manifest)
+	}
 	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got != baseSHA {
 		t.Fatalf("worktree HEAD = %q, want %q", got, baseSHA)
 	}
@@ -171,11 +183,22 @@ func TestRunGitHubReportsExistingManifestWithoutGitHub(t *testing.T) {
 	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
 		t.Fatalf("initialize repository: %v", err)
 	}
-	stateDirectory := filepath.Join(repository, ".awdev", "issues", "gh-17")
-	if err := os.MkdirAll(stateDirectory, 0o755); err != nil {
-		t.Fatal(err)
+	manifest := state.Manifest{
+		SchemaVersion: state.CurrentSchemaVersion,
+		WorkflowID:    "wf_0123456789abcdef0123456789abcdef",
+		Source:        state.SourceGitHub,
+		Repository:    "owner/repository",
+		DefaultBranch: "main",
+		Issue:         state.IssueSnapshot{Number: 17, Title: "title", Body: "body", URL: "https://github.com/owner/repository/issues/17", State: "OPEN", UpdatedAt: time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)},
+		Actor:         "octocat",
+		Phase:         state.PhaseImplementation,
+		Status:        state.StatusFailed,
+		Branch:        "gh-17-title",
+		BaseSHA:       strings.Repeat("a", 40),
+		Worktree:      filepath.Join(repository, ".awdev", "worktrees", "gh-17-title"),
+		LastError:     &state.WorkflowError{Code: "technical_failure", Message: "safe failure"},
 	}
-	if err := os.WriteFile(filepath.Join(stateDirectory, "manifest.json"), []byte(`{"phase":"implementation","status":"failed"}`), 0o644); err != nil {
+	if err := state.NewStore().Save(repository, manifest); err != nil {
 		t.Fatal(err)
 	}
 	binDirectory := t.TempDir()
@@ -196,7 +219,7 @@ func TestRunGitHubReportsExistingManifestWithoutGitHub(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute duplicate run: %v", err)
 	}
-	if got, want := output.String(), "Workflow gh-17 already exists: implementation/failed.\n"; got != want {
+	if got, want := output.String(), "Workflow wf_0123456789abcdef0123456789abcdef already exists: implementation/failed.\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(githubCalled); !errors.Is(err, os.ErrNotExist) {

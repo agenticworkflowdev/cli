@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/cli"
@@ -16,6 +18,8 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
+
+const cliTestWorkflowID = "wf_0123456789abcdef0123456789abcdef"
 
 func TestRootCommandShowsHelpWithoutSelectingAnAgent(t *testing.T) {
 	var output bytes.Buffer
@@ -45,7 +49,7 @@ func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 		wantAgent  string
 		wantOutput string
 	}{
-		{name: "Codex", input: "2\n", wantAgent: "Codex", wantOutput: "Initialization complete. awdev is configured to use Codex.\n"},
+		{name: "Codex", input: "2\n", wantAgent: "Codex", wantOutput: "Initialization complete. AWDev is configured to use Codex.\n"},
 		{name: "Claude Code", input: "1\n", wantAgent: "Claude Code", wantOutput: "Claude Code is not implemented yet.\n"},
 	}
 
@@ -120,19 +124,25 @@ func TestInitCommandPrintsConciseSummary(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 
 	tests := []struct {
-		name   string
-		result initrepo.Result
-		want   []string
+		name      string
+		result    initrepo.Result
+		want      []string
+		wantBlock string
 	}{
 		{
 			name:   "created",
 			result: initrepo.Result{AwdevDirectoryCreated: true, Gitignore: initrepo.GitignoreCreated},
-			want:   []string{"Created .awdev/.", "Created .gitignore with awdev state and worktree entries."},
+			want:   []string{"Created .awdev/\n", "Created .gitignore with awdev state and worktree entries."},
+		},
+		{
+			name:      "created with retained gitignore",
+			result:    initrepo.Result{AwdevDirectoryCreated: true, Gitignore: initrepo.GitignoreRetained},
+			wantBlock: "Created .awdev/\n.gitignore already contains the AWDev entries.\nInitialization complete. AWDev is configured to use Codex.\n",
 		},
 		{
 			name:   "retained",
 			result: initrepo.Result{Gitignore: initrepo.GitignoreRetained},
-			want:   []string{".awdev/ already exists; missing defaults were checked.", ".gitignore already contains the awdev entries."},
+			want:   []string{".awdev/ already exists; missing defaults were checked.", ".gitignore already contains the AWDev entries.\n"},
 		},
 		{
 			name:   "gitignore updated",
@@ -158,10 +168,13 @@ func TestInitCommandPrintsConciseSummary(t *testing.T) {
 			if err := command.Execute(); err != nil {
 				t.Fatalf("execute init: %v", err)
 			}
-			for _, want := range append(test.want, "Initialization complete. awdev is configured to use Codex.") {
+			for _, want := range append(test.want, "Initialization complete. AWDev is configured to use Codex.\n") {
 				if !strings.Contains(output.String(), want) {
 					t.Errorf("init output %q does not contain %q", output.String(), want)
 				}
+			}
+			if test.wantBlock != "" && !strings.Contains(output.String(), test.wantBlock) {
+				t.Errorf("init output %q does not contain exact block %q", output.String(), test.wantBlock)
 			}
 			for _, unwanted := range []string{".awdev/config.json", "Created:", "Retained:", "Changed:"} {
 				if strings.Contains(output.String(), unwanted) {
@@ -401,7 +414,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 				t.Fatalf("run service inputs = %q, %d", root, number)
 			}
 			return workflow.RunResult{
-				WorkflowID: "gh-17",
+				WorkflowID: cliTestWorkflowID,
 				Outcome:    workflow.RunReady,
 				Snapshot: githubapi.Snapshot{
 					Repository: githubapi.Repository{NameWithOwner: "owner/repository", DefaultBranch: "main"},
@@ -426,7 +439,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "Prepared worktree gh-17-a-title at /repo/.awdev/worktrees/gh-17-a-title pinned to aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for GitHub issue owner/repository#17.\n"; got != want {
+	if got, want := output.String(), "GitHub issue: #17\nWorktree: gh-17-a-title\nBranch: gh-17-a-title\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
@@ -439,9 +452,9 @@ func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
 		ValidateConfig:   func(string) error { return nil },
 		RunGitHub: func(context.Context, string, int) (workflow.RunResult, error) {
 			return workflow.RunResult{
-				WorkflowID: "gh-17",
+				WorkflowID: cliTestWorkflowID,
 				Outcome:    workflow.RunExisting,
-				Existing:   state.ExistingWorkflow{Exists: true, Phase: "spec", Status: "blocked"},
+				Existing:   state.ExistingWorkflow{Exists: true, Manifest: &state.Manifest{Phase: "spec", Status: "blocked"}},
 			}, nil
 		},
 		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error { return nil },
@@ -452,7 +465,199 @@ func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "Workflow gh-17 already exists: spec/blocked.\n"; got != want {
+	if got, want := output.String(), "Workflow "+cliTestWorkflowID+" already exists: spec/blocked.\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestStatusGitHubRendersEveryWorkflowCondition(t *testing.T) {
+	tests := []struct {
+		name  string
+		edit  func(*state.Manifest)
+		extra string
+	}{
+		{name: "running", edit: func(manifest *state.Manifest) {}},
+		{name: "blocked", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseSpec
+			manifest.Status = state.StatusBlocked
+			manifest.Blocker = &state.Blocker{ID: "blocker-1", Phase: state.PhaseSpec, Question: "Which behavior?", Comment: &state.SourceReference{ID: "123", URL: "https://github.com/owner/repository/issues/17#issuecomment-123"}}
+		}, extra: "Blocker: Which behavior?\n"},
+		{name: "failed", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseImplementation
+			manifest.Status = state.StatusFailed
+			manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "safe\n \x1b[31mdiagnostic\x1b[0m\ttext"}
+		}, extra: "Last error: safe diagnostic text\n"},
+		{name: "done", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseDone
+			manifest.Status = state.StatusDone
+			manifest.PullRequest = &state.PullRequest{Number: 23, URL: "https://github.com/owner/repository/pull/23"}
+		}, extra: "Pull request: https://github.com/owner/repository/pull/23\n"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := cliStatusManifest()
+			test.edit(&manifest)
+			var output bytes.Buffer
+			services := statusServices(func(_ context.Context, root string, number int, options workflow.StatusOptions) (workflow.StatusResult, error) {
+				if root != "/repo" || number != 17 || options.CheckIssue {
+					t.Fatalf("status inputs = %q, %d, %#v", root, number, options)
+				}
+				return workflow.StatusResult{Manifest: manifest}, nil
+			})
+			command := cli.NewRootCommand(services)
+			command.SetOut(&output)
+			command.SetArgs([]string{"status", "github", "17"})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("status command: %v", err)
+			}
+			want := "Workflow: " + cliTestWorkflowID + "\nSource: github\nIssue: owner/repository#17 — A title\nPhase: " + string(manifest.Phase) + "\nStatus: " + string(manifest.Status) + "\n" + test.extra
+			if output.String() != want {
+				t.Fatalf("output = %q, want %q", output.String(), want)
+			}
+		})
+	}
+}
+
+func TestStatusGitHubRendersStableJSONAndDriftWarning(t *testing.T) {
+	manifest := cliStatusManifest()
+	manifest.Phase = state.PhaseSpec
+	manifest.Status = state.StatusBlocked
+	manifest.Blocker = &state.Blocker{ID: "blocker-1", Phase: state.PhaseSpec, Question: "Which behavior?", Comment: &state.SourceReference{ID: "123", URL: "https://github.com/owner/repository/issues/17#issuecomment-123"}}
+	var output bytes.Buffer
+	services := statusServices(func(_ context.Context, _ string, _ int, options workflow.StatusOptions) (workflow.StatusResult, error) {
+		if !options.CheckIssue {
+			t.Fatal("--check-issue was not forwarded")
+		}
+		return workflow.StatusResult{Manifest: manifest, Warning: "GitHub issue changed; using the saved snapshot."}, nil
+	})
+	command := cli.NewRootCommand(services)
+	command.SetOut(&output)
+	command.SetArgs([]string{"status", "github", "17", "--json", "--check-issue"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("status command: %v", err)
+	}
+	want := "{\n" +
+		"  \"workflow_id\": \"" + cliTestWorkflowID + "\",\n" +
+		"  \"source\": \"github\",\n" +
+		"  \"repository\": \"owner/repository\",\n" +
+		"  \"issue\": {\n" +
+		"    \"number\": 17,\n" +
+		"    \"title\": \"A title\",\n" +
+		"    \"url\": \"https://github.com/owner/repository/issues/17\"\n" +
+		"  },\n" +
+		"  \"phase\": \"spec\",\n" +
+		"  \"status\": \"blocked\",\n" +
+		"  \"blocker_question\": \"Which behavior?\",\n" +
+		"  \"warning\": \"GitHub issue changed; using the saved snapshot.\"\n" +
+		"}\n"
+	if output.String() != want {
+		t.Fatalf("JSON output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestStatusGitHubStableJSONGoldensForRunningFailedAndDone(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*state.Manifest)
+		want string
+	}{
+		{name: "running", edit: func(*state.Manifest) {}, want: `{
+  "workflow_id": "wf_0123456789abcdef0123456789abcdef",
+  "source": "github",
+  "repository": "owner/repository",
+  "issue": {
+    "number": 17,
+    "title": "A title",
+    "url": "https://github.com/owner/repository/issues/17"
+  },
+  "phase": "init",
+  "status": "running"
+}
+`},
+		{name: "failed", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseImplementation
+			manifest.Status = state.StatusFailed
+			manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "safe\n\x1b[31mdiagnostic\x1b[0m\ttext"}
+		}, want: `{
+  "workflow_id": "wf_0123456789abcdef0123456789abcdef",
+  "source": "github",
+  "repository": "owner/repository",
+  "issue": {
+    "number": 17,
+    "title": "A title",
+    "url": "https://github.com/owner/repository/issues/17"
+  },
+  "phase": "implementation",
+  "status": "failed",
+  "last_error": "safe\n\u001b[31mdiagnostic\u001b[0m\ttext"
+}
+`},
+		{name: "done", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseDone
+			manifest.Status = state.StatusDone
+			manifest.PullRequest = &state.PullRequest{Number: 23, URL: "https://github.com/owner/repository/pull/23"}
+		}, want: `{
+  "workflow_id": "wf_0123456789abcdef0123456789abcdef",
+  "source": "github",
+  "repository": "owner/repository",
+  "issue": {
+    "number": 17,
+    "title": "A title",
+    "url": "https://github.com/owner/repository/issues/17"
+  },
+  "phase": "done",
+  "status": "done",
+  "pull_request_url": "https://github.com/owner/repository/pull/23"
+}
+`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := cliStatusManifest()
+			test.edit(&manifest)
+			var output bytes.Buffer
+			command := cli.NewRootCommand(statusServices(func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error) {
+				return workflow.StatusResult{Manifest: manifest}, nil
+			}))
+			command.SetOut(&output)
+			command.SetArgs([]string{"status", "github", "17", "--json"})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("status command: %v", err)
+			}
+			if output.String() != test.want {
+				t.Fatalf("JSON output = %q, want %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
+func statusServices(status func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error)) cli.Services {
+	return cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		StatusGitHub:     status,
+		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
+			return errors.New("generic operation should not run")
+		},
+	}
+}
+
+func cliStatusManifest() state.Manifest {
+	return state.Manifest{
+		SchemaVersion: state.CurrentSchemaVersion,
+		WorkflowID:    cliTestWorkflowID,
+		Source:        state.SourceGitHub,
+		Repository:    "owner/repository",
+		DefaultBranch: "main",
+		Issue:         state.IssueSnapshot{Number: 17, Title: "A title", Body: "saved body", URL: "https://github.com/owner/repository/issues/17", State: "OPEN", UpdatedAt: time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)},
+		Actor:         "octocat",
+		Phase:         state.PhaseInit,
+		Status:        state.StatusRunning,
+		Branch:        "gh-17-a-title",
+		BaseSHA:       strings.Repeat("a", 40),
+		Worktree:      filepath.Join("/repo", ".awdev", "worktrees", "gh-17-a-title"),
 	}
 }

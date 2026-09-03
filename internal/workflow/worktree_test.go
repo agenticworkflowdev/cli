@@ -12,7 +12,7 @@ import (
 func TestWorktreeBootstrapperCarriesValidatedGitHubData(t *testing.T) {
 	preparer := &fakeWorktreePreparer{result: gitrepo.Worktree{Branch: "gh-17-a-title"}}
 	bootstrapper := workflow.NewWorktreeBootstrapper(preparer)
-	bootstrap := workflow.Bootstrap{ControllerRoot: "/repo", WorkflowID: "gh-17", Snapshot: validSnapshot()}
+	bootstrap := workflow.Bootstrap{ControllerRoot: "/repo", Snapshot: validSnapshot()}
 
 	result, err := bootstrapper.Continue(context.Background(), bootstrap)
 	if err != nil {
@@ -25,7 +25,6 @@ func TestWorktreeBootstrapperCarriesValidatedGitHubData(t *testing.T) {
 		ControllerRoot:     "/repo",
 		RepositoryIdentity: "owner/repository",
 		DefaultBranch:      "main",
-		WorkflowID:         "gh-17",
 		IssueNumber:        17,
 		IssueTitle:         "A title",
 	}

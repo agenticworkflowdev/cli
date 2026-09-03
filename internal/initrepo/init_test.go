@@ -16,6 +16,7 @@ var expectedLayout = []string{
 	".awdev",
 	".awdev/config.json",
 	".awdev/issues",
+	".awdev/locks",
 	".awdev/prompts",
 	".awdev/prompts/fix-checks.md",
 	".awdev/prompts/fix-review.md",
@@ -92,10 +93,10 @@ func TestInitializeAppendsOnlyMissingIgnoreEntries(t *testing.T) {
 		want     string
 		status   initrepo.GitignoreStatus
 	}{
-		{name: "absent", want: ".awdev/issues/\n.awdev/worktrees/\n", status: initrepo.GitignoreCreated},
-		{name: "partial", existing: stringPointer("bin/\n.awdev/issues/\n"), want: "bin/\n.awdev/issues/\n.awdev/worktrees/\n", status: initrepo.GitignoreUpdated},
-		{name: "duplicates", existing: stringPointer(".awdev/issues/\n.awdev/issues/\n.awdev/worktrees/\n"), want: ".awdev/issues/\n.awdev/issues/\n.awdev/worktrees/\n", status: initrepo.GitignoreRetained},
-		{name: "missing final newline", existing: stringPointer("bin/"), want: "bin/\n.awdev/issues/\n.awdev/worktrees/\n", status: initrepo.GitignoreUpdated},
+		{name: "absent", want: ".awdev/issues/\n.awdev/locks/\n.awdev/worktrees/\n", status: initrepo.GitignoreCreated},
+		{name: "partial", existing: stringPointer("bin/\n.awdev/issues/\n"), want: "bin/\n.awdev/issues/\n.awdev/locks/\n.awdev/worktrees/\n", status: initrepo.GitignoreUpdated},
+		{name: "duplicates", existing: stringPointer(".awdev/issues/\n.awdev/issues/\n.awdev/locks/\n.awdev/worktrees/\n"), want: ".awdev/issues/\n.awdev/issues/\n.awdev/locks/\n.awdev/worktrees/\n", status: initrepo.GitignoreRetained},
+		{name: "missing final newline", existing: stringPointer("bin/"), want: "bin/\n.awdev/issues/\n.awdev/locks/\n.awdev/worktrees/\n", status: initrepo.GitignoreUpdated},
 	}
 
 	for _, test := range tests {

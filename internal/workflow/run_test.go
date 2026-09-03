@@ -14,6 +14,8 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
 
+const fixedWorkflowID = "wf_0123456789abcdef0123456789abcdef"
+
 func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	events := []string{}
 	lock := &fakeLock{events: &events}
@@ -21,24 +23,27 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	existing := fakeExisting{events: &events}
 	fetcher := fakeFetcher{events: &events, snapshot: validSnapshot()}
 	next := &fakeBootstrapper{events: &events, result: gitrepo.Worktree{
-		Branch:            "gh-17-a-title",
-		BaseSHA:           strings.Repeat("a", 40),
-		AbsolutePath:      "/repo/.awdev/worktrees/gh-17-a-title",
-		SpecificationPath: ".awdev/specs/gh-17.md",
+		Branch:       "gh-17-a-title",
+		BaseSHA:      strings.Repeat("a", 40),
+		AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title",
 	}}
-	service := workflow.NewRunService(locker, existing, fetcher, next)
+	writer := &fakeManifestWriter{events: &events}
+	service := workflow.NewRunService(locker, existing, fetcher, next, writer, generateFixedWorkflowID)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Outcome != workflow.RunReady || result.WorkflowID != "gh-17" || result.Snapshot.Issue.Number != 17 {
+	if result.Outcome != workflow.RunReady || result.WorkflowID != fixedWorkflowID || result.Snapshot.Issue.Number != 17 {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.Worktree != next.result {
 		t.Fatalf("result worktree = %#v, want %#v", result.Worktree, next.result)
 	}
-	want := []string{"state:gh-17", "lock:gh-17", "state:gh-17", "github:17", "continue:gh-17", "unlock"}
+	if result.Manifest == nil || result.Manifest.Issue.Body != validSnapshot().Issue.Body || result.Manifest.Phase != state.PhaseInit || result.Manifest.Status != state.StatusRunning || result.Manifest.SpecificationPath != "" {
+		t.Fatalf("initial manifest = %#v", result.Manifest)
+	}
+	want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "unlock"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -71,6 +76,8 @@ func TestRunGitHubRejectsInvalidSnapshotBeforeContinuation(t *testing.T) {
 				fakeExisting{events: &events},
 				fakeFetcher{events: &events, snapshot: snapshot},
 				next,
+				&fakeManifestWriter{events: &events},
+				generateFixedWorkflowID,
 			)
 			_, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err == nil || !strings.Contains(err.Error(), test.wantText) {
@@ -94,18 +101,20 @@ func TestRunGitHubExistingManifestShortCircuitsFetchAndContinuation(t *testing.T
 			next := &fakeBootstrapper{events: &events}
 			service := workflow.NewRunService(
 				fakeLocker{events: &events, lock: &fakeLock{events: &events}},
-				fakeExisting{events: &events, workflow: state.ExistingWorkflow{Exists: true, Phase: "spec", Status: state.Status(status)}},
+				fakeExisting{events: &events, workflow: state.ExistingWorkflow{Exists: true, Manifest: &state.Manifest{WorkflowID: fixedWorkflowID, Phase: "spec", Status: state.Status(status)}}},
 				fetcher,
 				next,
+				&fakeManifestWriter{events: &events},
+				generateFixedWorkflowID,
 			)
 			result, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
-			if result.Outcome != workflow.RunExisting || string(result.Existing.Status) != status {
+			if result.Outcome != workflow.RunExisting || result.Existing.Manifest == nil || string(result.Existing.Manifest.Status) != status {
 				t.Fatalf("result = %#v", result)
 			}
-			want := []string{"state:gh-17"}
+			want := []string{"state:17"}
 			if !reflect.DeepEqual(events, want) || next.called {
 				t.Fatalf("duplicate run side effects: events=%v next=%v", events, next.called)
 			}
@@ -119,7 +128,7 @@ func TestRunGitHubRechecksManifestAfterAcquiringLock(t *testing.T) {
 		events: &events,
 		workflows: []state.ExistingWorkflow{
 			{},
-			{Exists: true, Phase: "spec", Status: "running"},
+			{Exists: true, Manifest: &state.Manifest{WorkflowID: fixedWorkflowID, Phase: "spec", Status: "running"}},
 		},
 	}
 	service := workflow.NewRunService(
@@ -127,15 +136,17 @@ func TestRunGitHubRechecksManifestAfterAcquiringLock(t *testing.T) {
 		existing,
 		fakeFetcher{events: &events, err: errors.New("must not fetch")},
 		&fakeBootstrapper{events: &events},
+		&fakeManifestWriter{events: &events},
+		generateFixedWorkflowID,
 	)
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Outcome != workflow.RunExisting || result.Existing.Status != "running" {
+	if result.Outcome != workflow.RunExisting || result.Existing.Manifest == nil || result.Existing.Manifest.Status != "running" {
 		t.Fatalf("result = %#v", result)
 	}
-	want := []string{"state:gh-17", "lock:gh-17", "state:gh-17", "unlock"}
+	want := []string{"state:17", "lock:gh-17", "state:17", "unlock"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -148,6 +159,8 @@ func TestRunGitHubRequiresWorktreeBootstrapperForNewWorkflow(t *testing.T) {
 		fakeExisting{events: &events},
 		fakeFetcher{events: &events, snapshot: validSnapshot()},
 		nil,
+		nil,
+		generateFixedWorkflowID,
 	)
 	_, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err == nil || !strings.Contains(err.Error(), "not fully configured") {
@@ -156,6 +169,49 @@ func TestRunGitHubRequiresWorktreeBootstrapperForNewWorkflow(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("incomplete service performed side effects: %v", events)
 	}
+}
+
+func TestRunGitHubPersistsOnlyAfterValidatedWorktreeAndReportsPersistenceFailure(t *testing.T) {
+	t.Run("worktree failure", func(t *testing.T) {
+		events := []string{}
+		writer := &fakeManifestWriter{events: &events}
+		service := workflow.NewRunService(
+			fakeLocker{events: &events, lock: &fakeLock{events: &events}},
+			fakeExisting{events: &events},
+			fakeFetcher{events: &events, snapshot: validSnapshot()},
+			&fakeBootstrapper{events: &events, err: errors.New("worktree invalid")},
+			writer,
+			generateFixedWorkflowID,
+		)
+		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil {
+			t.Fatal("worktree failure was ignored")
+		}
+		if writer.manifest.WorkflowID != "" {
+			t.Fatal("manifest was written before worktree validation")
+		}
+	})
+
+	t.Run("manifest failure", func(t *testing.T) {
+		events := []string{}
+		writer := &fakeManifestWriter{events: &events, err: errors.New("disk full")}
+		service := workflow.NewRunService(
+			fakeLocker{events: &events, lock: &fakeLock{events: &events}},
+			fakeExisting{events: &events},
+			fakeFetcher{events: &events, snapshot: validSnapshot()},
+			&fakeBootstrapper{events: &events, result: gitrepo.Worktree{
+				Branch: "gh-17-a-title", BaseSHA: strings.Repeat("a", 40), AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title",
+			}},
+			writer,
+			generateFixedWorkflowID,
+		)
+		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil || !strings.Contains(err.Error(), "persist initial workflow manifest") {
+			t.Fatalf("error = %v, want persistence failure", err)
+		}
+		want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "unlock"}
+		if !reflect.DeepEqual(events, want) {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	})
 }
 
 func validSnapshot() githubapi.Snapshot {
@@ -200,15 +256,15 @@ type sequenceExisting struct {
 	workflows []state.ExistingWorkflow
 }
 
-func (existing *sequenceExisting) ReadExisting(_ string, workflowID string) (state.ExistingWorkflow, error) {
-	*existing.events = append(*existing.events, "state:"+workflowID)
+func (existing *sequenceExisting) ReadExisting(_ string, issueNumber int) (state.ExistingWorkflow, error) {
+	*existing.events = append(*existing.events, "state:"+fmtInt(issueNumber))
 	workflow := existing.workflows[0]
 	existing.workflows = existing.workflows[1:]
 	return workflow, nil
 }
 
-func (existing fakeExisting) ReadExisting(_ string, workflowID string) (state.ExistingWorkflow, error) {
-	*existing.events = append(*existing.events, "state:"+workflowID)
+func (existing fakeExisting) ReadExisting(_ string, issueNumber int) (state.ExistingWorkflow, error) {
+	*existing.events = append(*existing.events, "state:"+fmtInt(issueNumber))
 	return existing.workflow, nil
 }
 
@@ -231,10 +287,22 @@ type fakeBootstrapper struct {
 	err       error
 }
 
+type fakeManifestWriter struct {
+	events   *[]string
+	manifest state.Manifest
+	err      error
+}
+
+func (writer *fakeManifestWriter) Save(_ string, manifest state.Manifest) error {
+	writer.manifest = manifest
+	*writer.events = append(*writer.events, "manifest:"+manifest.WorkflowID)
+	return writer.err
+}
+
 func (bootstrapper *fakeBootstrapper) Continue(_ context.Context, bootstrap workflow.Bootstrap) (gitrepo.Worktree, error) {
 	bootstrapper.called = true
 	bootstrapper.bootstrap = bootstrap
-	*bootstrapper.events = append(*bootstrapper.events, "continue:"+bootstrap.WorkflowID)
+	*bootstrapper.events = append(*bootstrapper.events, "continue")
 	return bootstrapper.result, bootstrapper.err
 }
 
@@ -244,3 +312,5 @@ func fmtInt(value int) string {
 	}
 	return "unexpected"
 }
+
+func generateFixedWorkflowID() (string, error) { return fixedWorkflowID, nil }

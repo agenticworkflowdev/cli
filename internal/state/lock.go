@@ -3,9 +3,12 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,25 +34,52 @@ func NewFileLocker() FileLocker { return FileLocker{} }
 
 // Acquire waits for the named workflow lock while honoring cancellation.
 func (FileLocker) Acquire(ctx context.Context, controllerRoot, workflowID string) (Lock, error) {
-	if err := validateWorkflowID(workflowID); err != nil {
+	if err := validateGitHubIssueKey(workflowID); err != nil {
 		return nil, err
 	}
-	stateDirectory := filepath.Join(controllerRoot, ".awdev", "issues", workflowID)
-	if err := os.MkdirAll(stateDirectory, 0o755); err != nil {
-		return nil, fmt.Errorf("prepare workflow state directory: %w", err)
+	stateDirectory, err := ensureLockDirectory(controllerRoot)
+	if err != nil {
+		return nil, fmt.Errorf("prepare workflow lock directory: %w", err)
 	}
-	lockPath := filepath.Join(stateDirectory, ".lock")
+	lockPath := filepath.Join(stateDirectory, workflowID+".lock")
 	return acquirePlatformLock(ctx, lockPath)
 }
 
-func validateWorkflowID(workflowID string) error {
-	if len(workflowID) < 4 || workflowID[:3] != "gh-" {
-		return fmt.Errorf("invalid workflow identity %q", workflowID)
+func ensureLockDirectory(controllerRoot string) (string, error) {
+	if !filepath.IsAbs(controllerRoot) || filepath.Clean(controllerRoot) != controllerRoot {
+		return "", errors.New("controller root must be an absolute clean path")
 	}
-	for _, character := range workflowID[3:] {
-		if character < '0' || character > '9' {
-			return fmt.Errorf("invalid workflow identity %q", workflowID)
+	components := []string{
+		filepath.Join(controllerRoot, ".awdev"),
+		filepath.Join(controllerRoot, ".awdev", "locks"),
+	}
+	for _, component := range components {
+		info, err := os.Lstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			mkdirErr := os.Mkdir(component, 0o755)
+			info, err = os.Lstat(component)
+			if err != nil && mkdirErr != nil {
+				return "", mkdirErr
+			}
 		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("%s must be a real directory, not a symlink", component)
+		}
+	}
+	return components[len(components)-1], nil
+}
+
+func validateGitHubIssueKey(workflowID string) error {
+	if !strings.HasPrefix(workflowID, "gh-") {
+		return fmt.Errorf("invalid GitHub issue coordination key %q", workflowID)
+	}
+	number, err := strconv.Atoi(strings.TrimPrefix(workflowID, "gh-"))
+	want, wantErr := GitHubIssueKey(number)
+	if err != nil || wantErr != nil || want != workflowID {
+		return fmt.Errorf("invalid GitHub issue coordination key %q", workflowID)
 	}
 	return nil
 }

@@ -157,6 +157,40 @@ func (client *Client) Fetch(ctx context.Context, controllerRoot string, issueNum
 	return snapshot, nil
 }
 
+// IssueUpdatedAt reads the live issue timestamp without changing workflow input.
+func (client *Client) IssueUpdatedAt(ctx context.Context, controllerRoot, repository string, issueNumber int) (time.Time, error) {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return time.Time{}, errors.New("GitHub client is not fully configured")
+	}
+	if !validRepositoryIdentity(repository) || issueNumber <= 0 {
+		return time.Time{}, errors.New("GitHub issue identity is malformed")
+	}
+	output, err := client.run(
+		ctx,
+		controllerRoot,
+		"issue", "view", strconv.Itoa(issueNumber),
+		"--repo", repository,
+		"--json", "updatedAt",
+	)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("fetch GitHub issue update timestamp: %w", err)
+	}
+	var raw struct {
+		UpdatedAt *string `json:"updatedAt"`
+	}
+	if err := decodeStrict(output, &raw); err != nil {
+		return time.Time{}, fmt.Errorf("decode GitHub issue update timestamp: %w", err)
+	}
+	if raw.UpdatedAt == nil {
+		return time.Time{}, errors.New("GitHub issue update timestamp is missing")
+	}
+	updatedAt, err := time.Parse(time.RFC3339, *raw.UpdatedAt)
+	if err != nil {
+		return time.Time{}, errors.New("GitHub issue update timestamp is malformed")
+	}
+	return updatedAt, nil
+}
+
 func (client *Client) run(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
 	request := processrun.Request{
 		Directory: directory,

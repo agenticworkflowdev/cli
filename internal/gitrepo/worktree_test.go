@@ -58,7 +58,6 @@ func TestWorktreeManagerCreatesAndExactlyReentersPinnedWorktree(t *testing.T) {
 		ControllerRoot:     controller,
 		RepositoryIdentity: "owner/repository",
 		DefaultBranch:      "main",
-		WorkflowID:         "gh-17",
 		IssueNumber:        17,
 		IssueTitle:         "Create ../safe worktree; $(touch nope)",
 	}
@@ -76,9 +75,6 @@ func TestWorktreeManagerCreatesAndExactlyReentersPinnedWorktree(t *testing.T) {
 	wantPath := filepath.Join(canonicalController, ".awdev", "worktrees", "gh-17-create-safe-worktree-touch-nope")
 	if created.Branch != "gh-17-create-safe-worktree-touch-nope" || created.BaseSHA != baseSHA || created.AbsolutePath != wantPath {
 		t.Fatalf("created worktree = %#v", created)
-	}
-	if created.SpecificationPath == "" || filepath.IsAbs(created.SpecificationPath) {
-		t.Fatalf("specification path = %q, want non-empty relative path", created.SpecificationPath)
 	}
 	if got := gitOutput(t, controller, "branch", "--show-current"); got != "main" {
 		t.Fatalf("controller branch = %q, want main", got)
@@ -109,6 +105,23 @@ func TestWorktreeManagerCreatesAndExactlyReentersPinnedWorktree(t *testing.T) {
 	}
 }
 
+func TestWorktreeManagerReportsStaleRegistrationWithMissingFolder(t *testing.T) {
+	controller, _ := newRemoteRepository(t)
+	created, err := prepareTitleWorktree(controller)
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if err := os.RemoveAll(created.AbsolutePath); err != nil {
+		t.Fatalf("remove worktree folder: %v", err)
+	}
+
+	_, err = prepareTitleWorktree(controller)
+	want := "deterministic worktree state is incomplete:\n- folder: missing (" + created.AbsolutePath + ")\n- worktree: stale\n- branch: exists (" + created.Branch + ")"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want status block %q", err, want)
+	}
+}
+
 func TestWorktreeManagerRejectsShallowRepositoryBeforeCreation(t *testing.T) {
 	root := t.TempDir()
 	runner := &scriptedGitRunner{stdout: []string{
@@ -120,7 +133,6 @@ func TestWorktreeManagerRejectsShallowRepositoryBeforeCreation(t *testing.T) {
 		ControllerRoot:     root,
 		RepositoryIdentity: "owner/repository",
 		DefaultBranch:      "main",
-		WorkflowID:         "gh-17",
 		IssueNumber:        17,
 		IssueTitle:         "title",
 	})
@@ -288,7 +300,6 @@ func prepareTitleWorktree(controller string) (gitrepo.Worktree, error) {
 		ControllerRoot:     controller,
 		RepositoryIdentity: "owner/repository",
 		DefaultBranch:      "main",
-		WorkflowID:         "gh-17",
 		IssueNumber:        17,
 		IssueTitle:         "title",
 	})

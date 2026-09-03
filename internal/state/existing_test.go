@@ -1,6 +1,7 @@
 package state_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,19 +13,28 @@ func TestManifestReaderRecognizesSupportedExistingStatuses(t *testing.T) {
 	for _, status := range []string{"running", "blocked", "failed", "done"} {
 		t.Run(status, func(t *testing.T) {
 			root := t.TempDir()
-			directory := filepath.Join(root, ".awdev", "issues", "gh-17")
-			if err := os.MkdirAll(directory, 0o755); err != nil {
+			manifest := validManifest(root)
+			manifest.Phase = state.PhaseImplementation
+			manifest.Status = state.Status(status)
+			manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
+			switch manifest.Status {
+			case state.StatusBlocked:
+				manifest.Blocker = publishedBlocker(state.PhaseImplementation)
+			case state.StatusFailed:
+				manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "failure"}
+			case state.StatusDone:
+				manifest.Phase = state.PhaseDone
+				manifest.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
+				manifest.PullRequest = &state.PullRequest{Number: 23, URL: "https://github.com/owner/repository/pull/23"}
+			}
+			if err := state.NewStore().Save(root, manifest); err != nil {
 				t.Fatal(err)
 			}
-			contents := []byte(`{"schema_version":1,"phase":"implementation","status":"` + status + `"}`)
-			if err := os.WriteFile(filepath.Join(directory, "manifest.json"), contents, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			existing, err := state.NewManifestReader().ReadExisting(root, "gh-17")
+			existing, err := state.NewManifestReader().ReadExisting(root, 17)
 			if err != nil {
 				t.Fatalf("read manifest: %v", err)
 			}
-			if !existing.Exists || string(existing.Status) != status || existing.Phase != "implementation" {
+			if !existing.Exists || existing.Manifest == nil || string(existing.Manifest.Status) != status {
 				t.Fatalf("existing = %#v", existing)
 			}
 		})
@@ -34,17 +44,42 @@ func TestManifestReaderRecognizesSupportedExistingStatuses(t *testing.T) {
 func TestManifestReaderReportsAbsentAndMalformedManifests(t *testing.T) {
 	root := t.TempDir()
 	reader := state.NewManifestReader()
-	if existing, err := reader.ReadExisting(root, "gh-17"); err != nil || existing.Exists {
+	if existing, err := reader.ReadExisting(root, 17); err != nil || existing.Exists {
 		t.Fatalf("absent manifest = %#v, %v", existing, err)
 	}
-	directory := filepath.Join(root, ".awdev", "issues", "gh-17")
-	if err := os.MkdirAll(directory, 0o755); err != nil {
+	manifest := validManifest(root)
+	manifest.Status = "unknown"
+	path, err := state.ManifestPath(root, manifest.WorkflowID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), []byte(`{"phase":"init","status":"unknown"}`), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reader.ReadExisting(root, "gh-17"); err == nil {
+	contents, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.ReadExisting(root, 17); err == nil {
 		t.Fatal("malformed manifest was accepted")
+	}
+}
+
+func TestManifestReaderRejectsDuplicateWorkflowsForOneIssue(t *testing.T) {
+	root := t.TempDir()
+	first := validManifest(root)
+	if err := state.NewStore().Save(root, first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.WorkflowID = "wf_fedcba9876543210fedcba9876543210"
+	if err := state.NewStore().Save(root, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.NewManifestReader().ReadExisting(root, 17); err == nil {
+		t.Fatal("duplicate issue workflows were accepted")
 	}
 }

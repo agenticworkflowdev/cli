@@ -26,7 +26,6 @@ func (bootstrapper *worktreeBootstrapper) Continue(ctx context.Context, bootstra
 		ControllerRoot:     bootstrap.ControllerRoot,
 		RepositoryIdentity: bootstrap.Snapshot.Repository.NameWithOwner,
 		DefaultBranch:      bootstrap.Snapshot.Repository.DefaultBranch,
-		WorkflowID:         bootstrap.WorkflowID,
 		IssueNumber:        bootstrap.Snapshot.Issue.Number,
 		IssueTitle:         bootstrap.Snapshot.Issue.Title,
 	})

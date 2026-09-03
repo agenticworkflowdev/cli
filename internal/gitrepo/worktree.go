@@ -28,17 +28,15 @@ type WorktreeRequest struct {
 	ControllerRoot     string
 	RepositoryIdentity string
 	DefaultBranch      string
-	WorkflowID         string
 	IssueNumber        int
 	IssueTitle         string
 }
 
 // Worktree is the validated, pinned workspace passed to later workflow phases.
 type Worktree struct {
-	Branch            string
-	BaseSHA           string
-	AbsolutePath      string
-	SpecificationPath string
+	Branch       string
+	BaseSHA      string
+	AbsolutePath string
 }
 
 // WorktreePreparer is the repository-operation seam used by the workflow.
@@ -140,14 +138,13 @@ func (manager *WorktreeManager) Prepare(ctx context.Context, request WorktreeReq
 	}
 
 	slug := IssueSlug(request.IssueTitle)
-	artifactName := request.WorkflowID + "-" + slug
+	artifactName := "gh-" + strconv.Itoa(request.IssueNumber) + "-" + slug
 	branch := artifactName
 	absolutePath := filepath.Join(worktreeArea, artifactName)
 	result := Worktree{
-		Branch:            branch,
-		BaseSHA:           baseSHA,
-		AbsolutePath:      absolutePath,
-		SpecificationPath: filepath.ToSlash(filepath.Join(".awdev", "specs", request.WorkflowID+".md")),
+		Branch:       branch,
+		BaseSHA:      baseSHA,
+		AbsolutePath: absolutePath,
 	}
 
 	matched, err := manager.matchesValidatedWorktree(ctx, controllerRoot, result)
@@ -188,8 +185,8 @@ func validateWorktreeRequest(request WorktreeRequest) error {
 	if request.ControllerRoot == "" {
 		return errors.New("controller root is required")
 	}
-	if request.IssueNumber <= 0 || request.WorkflowID != "gh-"+strconv.Itoa(request.IssueNumber) {
-		return errors.New("workflow identity does not match the positive issue number")
+	if request.IssueNumber <= 0 {
+		return errors.New("issue number must be positive")
 	}
 	if _, err := githubRepositoryIdentity("https://github.com/" + request.RepositoryIdentity); err != nil {
 		return errors.New("GitHub repository identity is malformed")
@@ -480,6 +477,13 @@ func (manager *WorktreeManager) validateWorktree(ctx context.Context, controller
 	}
 	canonicalPath, err := canonicalExistingDirectory(expected.AbsolutePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf(
+				"deterministic worktree state is incomplete:\n- folder: missing (%s)\n- worktree: stale\n- branch: exists (%s)",
+				expected.AbsolutePath,
+				expected.Branch,
+			)
+		}
 		return fmt.Errorf("validate deterministic worktree path: %w", err)
 	}
 	if !samePath(canonicalPath, expected.AbsolutePath) {

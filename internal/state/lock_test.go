@@ -38,11 +38,11 @@ func TestFileLockerSerializesSameWorkflowAndReleases(t *testing.T) {
 
 func TestFileLockerAllowsDifferentWorkflowsAndIgnoresStaleFile(t *testing.T) {
 	root := t.TempDir()
-	staleDirectory := filepath.Join(root, ".awdev", "issues", "gh-18")
+	staleDirectory := filepath.Join(root, ".awdev", "locks")
 	if err := os.MkdirAll(staleDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(staleDirectory, ".lock"), []byte("99999999\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(staleDirectory, "gh-18.lock"), []byte("99999999\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,4 +57,21 @@ func TestFileLockerAllowsDifferentWorkflowsAndIgnoresStaleFile(t *testing.T) {
 		t.Fatalf("acquire different/stale workflow: %v", err)
 	}
 	defer second.Release()
+}
+
+func TestFileLockerRejectsSymlinkedStateDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".awdev"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".awdev", "locks")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.NewFileLocker().Acquire(context.Background(), root, "gh-17"); err == nil {
+		t.Fatal("locker accepted symlinked state directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "gh-17.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("locker created state outside controller root: %v", err)
+	}
 }

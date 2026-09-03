@@ -24,7 +24,10 @@ func NewCommand() *cobra.Command {
 	githubClient := githubapi.NewClient("gh", processRunner)
 	worktreeManager := gitrepo.NewWorktreeManager("git", processRunner)
 	worktreeBootstrapper := workflow.NewWorktreeBootstrapper(worktreeManager)
-	runService := workflow.NewRunService(state.NewFileLocker(), state.NewManifestReader(), githubClient, worktreeBootstrapper)
+	manifestStore := state.NewStore()
+	manifestReader := state.NewManifestReader()
+	runService := workflow.NewRunService(state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore, state.NewWorkflowID)
+	statusService := workflow.NewStatusService(manifestReader, githubClient)
 	return cli.NewRootCommand(cli.Services{
 		WorkingDirectory:       os.Getwd,
 		DiscoverRoot:           gitrepo.DiscoverControllerRoot,
@@ -38,7 +41,8 @@ func NewCommand() *cobra.Command {
 			_, err = config.Parse(installed.Config.Contents)
 			return err
 		},
-		RunGitHub: runService.RunGitHub,
+		RunGitHub:    runService.RunGitHub,
+		StatusGitHub: statusService.StatusGitHub,
 		Execute: func(_ context.Context, operation cli.Operation, item cli.SourceItem, _ string) error {
 			return fmt.Errorf("awdev %s %s is not implemented yet", operation, item.Source)
 		},

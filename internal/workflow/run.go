@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
 	"github.com/agenticworkflowdev/cli/internal/gitrepo"
@@ -28,13 +27,13 @@ type RunResult struct {
 	Snapshot   githubapi.Snapshot
 	Worktree   gitrepo.Worktree
 	Existing   state.ExistingWorkflow
+	Manifest   *state.Manifest
 }
 
 // Bootstrap contains the validated transient data passed to Slice 3. It is not
 // persisted by this service.
 type Bootstrap struct {
 	ControllerRoot string
-	WorkflowID     string
 	Snapshot       githubapi.Snapshot
 }
 
@@ -45,15 +44,17 @@ type Bootstrapper interface {
 
 // RunService downloads and validates a GitHub issue under its workflow lock.
 type RunService struct {
-	locker       state.Locker
-	existing     state.ExistingReader
-	github       githubapi.Fetcher
-	bootstrapper Bootstrapper
+	locker         state.Locker
+	existing       state.ExistingReader
+	github         githubapi.Fetcher
+	bootstrapper   Bootstrapper
+	manifestWriter state.ManifestWriter
+	workflowIDs    func() (string, error)
 }
 
 // NewRunService constructs the run application service.
-func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper) *RunService {
-	return &RunService{locker: locker, existing: existing, github: github, bootstrapper: bootstrapper}
+func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error)) *RunService {
+	return &RunService{locker: locker, existing: existing, github: github, bootstrapper: bootstrapper, manifestWriter: manifestWriter, workflowIDs: workflowIDs}
 }
 
 // RunGitHub validates one issue and holds the workflow lock through any
@@ -62,19 +63,22 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if issueNumber <= 0 {
 		return RunResult{}, errors.New("issue number must be positive")
 	}
-	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil {
+	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil {
 		return RunResult{}, errors.New("GitHub run service is not fully configured")
 	}
-	workflowID := "gh-" + strconv.Itoa(issueNumber)
-	existing, err := service.existing.ReadExisting(controllerRoot, workflowID)
+	issueKey, err := state.GitHubIssueKey(issueNumber)
+	if err != nil {
+		return RunResult{}, err
+	}
+	existing, err := service.existing.ReadExisting(controllerRoot, issueNumber)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("check existing workflow: %w", err)
 	}
 	if existing.Exists {
-		return RunResult{WorkflowID: workflowID, Outcome: RunExisting, Existing: existing}, nil
+		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
 
-	lock, err := service.locker.Acquire(ctx, controllerRoot, workflowID)
+	lock, err := service.locker.Acquire(ctx, controllerRoot, issueKey)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -85,12 +89,12 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		}
 	}()
 
-	existing, err = service.existing.ReadExisting(controllerRoot, workflowID)
+	existing, err = service.existing.ReadExisting(controllerRoot, issueNumber)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("check existing workflow: %w", err)
 	}
 	if existing.Exists {
-		return RunResult{WorkflowID: workflowID, Outcome: RunExisting, Existing: existing}, nil
+		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
 
 	snapshot, err := service.github.Fetch(ctx, controllerRoot, issueNumber)
@@ -101,10 +105,38 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		return RunResult{}, fmt.Errorf("validate GitHub issue: %w", err)
 	}
 
-	bootstrap := Bootstrap{ControllerRoot: controllerRoot, WorkflowID: workflowID, Snapshot: snapshot}
+	workflowID, err := service.workflowIDs()
+	if err != nil {
+		return RunResult{}, err
+	}
+	bootstrap := Bootstrap{ControllerRoot: controllerRoot, Snapshot: snapshot}
 	worktree, err := service.bootstrapper.Continue(ctx, bootstrap)
 	if err != nil {
 		return RunResult{}, err
 	}
-	return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree}, nil
+	manifest := state.Manifest{
+		SchemaVersion: state.CurrentSchemaVersion,
+		WorkflowID:    workflowID,
+		Source:        state.SourceGitHub,
+		Repository:    snapshot.Repository.NameWithOwner,
+		DefaultBranch: snapshot.Repository.DefaultBranch,
+		Issue: state.IssueSnapshot{
+			Number:    snapshot.Issue.Number,
+			Title:     snapshot.Issue.Title,
+			Body:      snapshot.Issue.Body,
+			URL:       snapshot.Issue.URL,
+			State:     snapshot.Issue.State,
+			UpdatedAt: snapshot.Issue.UpdatedAt,
+		},
+		Actor:    snapshot.Actor.Login,
+		Phase:    state.PhaseInit,
+		Status:   state.StatusRunning,
+		Branch:   worktree.Branch,
+		BaseSHA:  worktree.BaseSHA,
+		Worktree: worktree.AbsolutePath,
+	}
+	if err := service.manifestWriter.Save(controllerRoot, manifest); err != nil {
+		return RunResult{}, fmt.Errorf("persist initial workflow manifest: %w", err)
+	}
+	return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &manifest}, nil
 }

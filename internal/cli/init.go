@@ -53,7 +53,7 @@ func newInitCommand(services Services) *cobra.Command {
 func writeInitializationResult(command *cobra.Command, result initrepo.Result, provider agent.Provider) error {
 	writer := command.OutOrStdout()
 	if result.AwdevDirectoryCreated {
-		if _, err := fmt.Fprintln(writer, "Created .awdev/."); err != nil {
+		if _, err := fmt.Fprintln(writer, "Created .awdev/"); err != nil {
 			return err
 		}
 	} else if _, err := fmt.Fprintln(writer, ".awdev/ already exists; missing defaults were checked."); err != nil {
@@ -70,13 +70,13 @@ func writeInitializationResult(command *cobra.Command, result initrepo.Result, p
 			return err
 		}
 	case initrepo.GitignoreRetained:
-		if _, err := fmt.Fprintln(writer, ".gitignore already contains the awdev entries."); err != nil {
+		if _, err := fmt.Fprintln(writer, ".gitignore already contains the AWDev entries."); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown .gitignore initialization status %q", result.Gitignore)
 	}
 
-	_, err := fmt.Fprintf(writer, "Initialization complete. awdev is configured to use %s.\n", provider.DisplayName())
+	_, err := fmt.Fprintf(writer, "Initialization complete. AWDev is configured to use %s.\n", provider.DisplayName())
 	return err
 }

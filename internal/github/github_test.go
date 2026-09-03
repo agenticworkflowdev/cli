@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
 	processrun "github.com/agenticworkflowdev/cli/internal/process"
@@ -91,6 +92,32 @@ func TestClientAcceptsLargeIssueBodyWithinBound(t *testing.T) {
 	}
 	if snapshot.Issue.Body != body {
 		t.Fatalf("large body length = %d, want %d", len(snapshot.Issue.Body), len(body))
+	}
+}
+
+func TestClientReadsIssueUpdateTimestamp(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{{stdout: `{"updatedAt":"2026-08-29T12:00:00Z"}`}}}
+	client := githubapi.NewClient("gh", runner)
+	got, err := client.IssueUpdatedAt(context.Background(), "/repo", "owner/repository", 17)
+	if err != nil {
+		t.Fatalf("read issue update: %v", err)
+	}
+	want := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("updatedAt = %s, want %s", got, want)
+	}
+	wantArgv := []string{"gh", "issue", "view", "17", "--repo", "owner/repository", "--json", "updatedAt"}
+	if !reflect.DeepEqual(runner.requests[0].Argv, wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", runner.requests[0].Argv, wantArgv)
+	}
+}
+
+func TestClientRejectsMalformedIssueUpdateTimestamp(t *testing.T) {
+	for _, output := range []string{`{}`, `{"updatedAt":"bad"}`, `{"updatedAt":"2026-08-29T12:00:00Z","extra":true}`} {
+		runner := &fakeRunner{responses: []fakeResponse{{stdout: output}}}
+		if _, err := githubapi.NewClient("gh", runner).IssueUpdatedAt(context.Background(), "/repo", "owner/repository", 17); err == nil {
+			t.Fatalf("malformed update response %q was accepted", output)
+		}
 	}
 }
 
