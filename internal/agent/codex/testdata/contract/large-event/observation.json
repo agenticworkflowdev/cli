@@ -1,0 +1,41 @@
+{
+  "name": "large-event",
+  "arguments": [
+    "$CODEX",
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--sandbox",
+    "read-only",
+    "--output-schema",
+    "$SCHEMA",
+    "--cd",
+    "$WORKSPACE",
+    "--output-last-message",
+    "$FINAL_OUTPUT",
+    "-"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CODEX_HOME",
+    "PATH"
+  ],
+  "sandbox": "read-only",
+  "exit_code": 0,
+  "outcome": "completed",
+  "session_id": "01a06783-9ddd-74e2-b86d-dc7300fe452b",
+  "event_types": [
+    "thread.started",
+    "turn.started",
+    "item.completed",
+    "item.started",
+    "turn.completed"
+  ],
+  "stdout_bytes": 132226,
+  "stderr_bytes": 740,
+  "largest_jsonl_event_bytes": 131275,
+  "final_output_present": true,
+  "final_output_bytes": 144
+}

@@ -1,0 +1,44 @@
+{
+  "name": "workspace-write",
+  "arguments": [
+    "$CODEX",
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--sandbox",
+    "workspace-write",
+    "--output-schema",
+    "$SCHEMA",
+    "--cd",
+    "$WORKSPACE",
+    "--output-last-message",
+    "$FINAL_OUTPUT",
+    "-"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CODEX_HOME",
+    "PATH"
+  ],
+  "sandbox": "workspace-write",
+  "exit_code": 0,
+  "outcome": "completed",
+  "session_id": "01a06783-6899-72b3-b551-80f2db370acd",
+  "event_types": [
+    "thread.started",
+    "turn.started",
+    "item.completed",
+    "item.started",
+    "turn.completed"
+  ],
+  "stdout_bytes": 1614,
+  "stderr_bytes": 740,
+  "largest_jsonl_event_bytes": 550,
+  "final_output_present": true,
+  "final_output_bytes": 124,
+  "workspace_marker_expected": true,
+  "workspace_marker_present": true,
+  "workspace_marker_matched": true
+}

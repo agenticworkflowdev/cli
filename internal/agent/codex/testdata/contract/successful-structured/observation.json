@@ -1,0 +1,40 @@
+{
+  "name": "successful-structured",
+  "arguments": [
+    "$CODEX",
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--sandbox",
+    "read-only",
+    "--output-schema",
+    "$SCHEMA",
+    "--cd",
+    "$WORKSPACE",
+    "--output-last-message",
+    "$FINAL_OUTPUT",
+    "-"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CODEX_HOME",
+    "PATH"
+  ],
+  "sandbox": "read-only",
+  "exit_code": 0,
+  "outcome": "completed",
+  "session_id": "01a06783-12a0-7971-940b-391fe6ed1650",
+  "event_types": [
+    "thread.started",
+    "turn.started",
+    "item.completed",
+    "turn.completed"
+  ],
+  "stdout_bytes": 429,
+  "stderr_bytes": 740,
+  "largest_jsonl_event_bytes": 170,
+  "final_output_present": true,
+  "final_output_bytes": 77
+}

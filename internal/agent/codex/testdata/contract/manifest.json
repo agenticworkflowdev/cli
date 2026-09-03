@@ -1,0 +1,256 @@
+{
+  "recorded_at": "2026-09-03T13:44:56Z",
+  "codex_version": "codex-cli 0.146.0",
+  "platform": "darwin/arm64",
+  "scenarios": [
+    {
+      "name": "successful-structured",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "read-only",
+      "exit_code": 0,
+      "outcome": "completed",
+      "session_id": "01a06783-12a0-7971-940b-391fe6ed1650",
+      "event_types": [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "turn.completed"
+      ],
+      "stdout_bytes": 429,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 170,
+      "final_output_present": true,
+      "final_output_bytes": 77
+    },
+    {
+      "name": "schema-rejected",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "read-only",
+      "exit_code": 1,
+      "outcome": "failed",
+      "error": "$CODEX exited with code 1",
+      "session_id": "01a06783-2999-77e3-9a93-c8aaa3c137e2",
+      "event_types": [
+        "thread.started",
+        "turn.started",
+        "error",
+        "turn.failed"
+      ],
+      "stdout_bytes": 967,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 440,
+      "final_output_present": false,
+      "final_output_bytes": 0
+    },
+    {
+      "name": "read-only",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "read-only",
+      "exit_code": 0,
+      "outcome": "completed",
+      "session_id": "01a06783-396a-7732-a59a-41aa60ce0eaf",
+      "event_types": [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "item.started",
+        "turn.completed"
+      ],
+      "stdout_bytes": 1912,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 912,
+      "final_output_present": true,
+      "final_output_bytes": 164,
+      "workspace_marker_expected": false,
+      "workspace_marker_present": false,
+      "workspace_marker_matched": false
+    },
+    {
+      "name": "workspace-write",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "workspace-write",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "workspace-write",
+      "exit_code": 0,
+      "outcome": "completed",
+      "session_id": "01a06783-6899-72b3-b551-80f2db370acd",
+      "event_types": [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "item.started",
+        "turn.completed"
+      ],
+      "stdout_bytes": 1614,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 550,
+      "final_output_present": true,
+      "final_output_bytes": 124,
+      "workspace_marker_expected": true,
+      "workspace_marker_present": true,
+      "workspace_marker_matched": true
+    },
+    {
+      "name": "large-event",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "read-only",
+      "exit_code": 0,
+      "outcome": "completed",
+      "session_id": "01a06783-9ddd-74e2-b86d-dc7300fe452b",
+      "event_types": [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "item.started",
+        "turn.completed"
+      ],
+      "stdout_bytes": 132226,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 131275,
+      "final_output_present": true,
+      "final_output_bytes": 144
+    },
+    {
+      "name": "cancellation",
+      "arguments": [
+        "$CODEX",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        "$SCHEMA",
+        "--cd",
+        "$WORKSPACE",
+        "--output-last-message",
+        "$FINAL_OUTPUT",
+        "-"
+      ],
+      "working_directory": "$WORKSPACE",
+      "environment_keys": [
+        "AWDEV_WORKER",
+        "CODEX_HOME",
+        "PATH"
+      ],
+      "sandbox": "read-only",
+      "exit_code": 0,
+      "outcome": "canceled",
+      "error": "run $CODEX: context deadline exceeded",
+      "session_id": "01a06783-e2f3-7b30-85c2-d6ff5e644dc8",
+      "event_types": [
+        "thread.started",
+        "turn.started"
+      ],
+      "stdout_bytes": 101,
+      "stderr_bytes": 740,
+      "largest_jsonl_event_bytes": 76,
+      "final_output_present": false,
+      "final_output_bytes": 0
+    }
+  ]
+}
