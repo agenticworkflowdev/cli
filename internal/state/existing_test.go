@@ -16,7 +16,6 @@ func TestManifestReaderRecognizesSupportedExistingStatuses(t *testing.T) {
 			manifest := validManifest(root)
 			manifest.Phase = state.PhaseImplementation
 			manifest.Status = state.Status(status)
-			manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
 			switch manifest.Status {
 			case state.StatusBlocked:
 				manifest.Blocker = publishedBlocker(state.PhaseImplementation)

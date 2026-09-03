@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/agenticworkflowdev/cli/internal/state"
@@ -91,6 +92,83 @@ func TestStoreToleratesConcurrentStateDirectoryCreation(t *testing.T) {
 	}
 	if !filesystem.raceTriggered {
 		t.Fatal("directory creation race was not exercised")
+	}
+}
+
+func TestStoreRequiresSpecificationFileBeforeRecordingItsPath(t *testing.T) {
+	root := t.TempDir()
+	manifest := validManifest(root)
+	manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
+	store := state.NewStore()
+
+	if err := store.Save(root, manifest); err == nil || !strings.Contains(err.Error(), "specification file does not exist") {
+		t.Fatalf("save without specification error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".awdev", "specs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(manifest.SpecificationPath)), []byte("# Specification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(root, manifest); err != nil {
+		t.Fatalf("save with specification: %v", err)
+	}
+}
+
+func TestStoreRejectsNonRegularSpecificationPaths(t *testing.T) {
+	setups := map[string]func(*testing.T, string, string){
+		"file symlink": func(t *testing.T, root, specificationPath string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(specificationPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "spec.md")
+			if err := os.WriteFile(target, []byte("# Outside\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, specificationPath); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"directory": func(t *testing.T, root, specificationPath string) {
+			t.Helper()
+			if err := os.MkdirAll(specificationPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlinked parent": func(t *testing.T, root, specificationPath string) {
+			t.Helper()
+			if err := os.Mkdir(filepath.Join(root, ".awdev"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, filepath.Base(specificationPath)), []byte("# Outside\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, ".awdev", "specs")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+
+	for name, setup := range setups {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			manifest := validManifest(root)
+			manifest.SpecificationPath = ".awdev/specs/" + manifest.WorkflowID + ".md"
+			specificationPath := filepath.Join(root, filepath.FromSlash(manifest.SpecificationPath))
+			setup(t, root, specificationPath)
+			if err := state.NewStore().Save(root, manifest); err == nil {
+				t.Fatal("non-regular specification path was accepted")
+			}
+			manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(manifestPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("manifest was persisted: %v", err)
+			}
+		})
 	}
 }
 

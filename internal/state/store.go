@@ -98,7 +98,7 @@ func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
 	if err := manifest.Validate(); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
 	}
-	if err := validateControllerPaths(controllerRoot, manifest); err != nil {
+	if err := store.validateControllerPaths(controllerRoot, manifest); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
 	}
 	return manifest, nil
@@ -113,7 +113,7 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
 	}
-	if err := validateControllerPaths(controllerRoot, manifest); err != nil {
+	if err := store.validateControllerPaths(controllerRoot, manifest); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
 	}
 	manifestPath, err := ManifestPath(controllerRoot, manifest.WorkflowID)
@@ -246,7 +246,7 @@ func (store *Store) workflowIDs(controllerRoot string) ([]string, error) {
 	return workflowIDs, nil
 }
 
-func validateControllerPaths(controllerRoot string, manifest Manifest) error {
+func (store *Store) validateControllerPaths(controllerRoot string, manifest Manifest) error {
 	if !filepath.IsAbs(controllerRoot) || filepath.Clean(controllerRoot) != controllerRoot {
 		return errors.New("controller root must be an absolute clean path")
 	}
@@ -259,6 +259,34 @@ func validateControllerPaths(controllerRoot string, manifest Manifest) error {
 	canonicalManifestRoot, err := filepath.EvalSymlinks(manifestRoot)
 	if err != nil || canonicalManifestRoot != canonicalRoot {
 		return errors.New("manifest worktree is outside the controller-owned worktree directory")
+	}
+	if manifest.SpecificationPath != "" {
+		for _, directory := range []string{
+			filepath.Join(controllerRoot, ".awdev"),
+			filepath.Join(controllerRoot, ".awdev", "specs"),
+		} {
+			info, statErr := store.filesystem.Lstat(directory)
+			if errors.Is(statErr, os.ErrNotExist) {
+				return errors.New("specification file does not exist")
+			}
+			if statErr != nil {
+				return fmt.Errorf("inspect specification directory: %w", statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return errors.New("specification directory must be a real directory, not a symlink")
+			}
+		}
+		specificationPath := filepath.Join(controllerRoot, filepath.FromSlash(manifest.SpecificationPath))
+		info, statErr := store.filesystem.Lstat(specificationPath)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return errors.New("specification file does not exist")
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect specification file: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("specification path must reference a regular file, not a symlink")
+		}
 	}
 	return nil
 }
