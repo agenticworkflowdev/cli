@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 )
 
@@ -45,9 +49,7 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 				return err
 			}
 			if operation == OperationRun && item.Source == SourceGitHub && services.RunGitHub != nil {
-				progress := func(message string) {
-					_, _ = fmt.Fprintln(command.ErrOrStderr(), message)
-				}
+				progress := newProgressReporter(command.ErrOrStderr())
 				result, err := services.RunGitHub(command.Context(), root, item.Number, progress)
 				if err != nil {
 					return err
@@ -75,6 +77,118 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 		command.Flags().SetInterspersed(false)
 	}
 	return command
+}
+
+func newProgressReporter(writer io.Writer) ProgressReporter {
+	interactive := false
+	if file, ok := writer.(*os.File); ok {
+		interactive = term.IsTerminal(file.Fd())
+	}
+	return newProgressReporterForTerminal(writer, interactive)
+}
+
+func newProgressReporterForTerminal(writer io.Writer, interactive bool) ProgressReporter {
+	loaderVisible := false
+	var mutex sync.Mutex
+	return func(update ProgressUpdate) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		message := update.Message
+		if update.Untrusted {
+			message = sanitizeProgressText(message)
+		}
+		if update.Transient {
+			if !interactive {
+				return
+			}
+			if message == "" {
+				if loaderVisible {
+					_, _ = fmt.Fprint(writer, "\r\x1b[2K")
+					loaderVisible = false
+				}
+				return
+			}
+			_, _ = fmt.Fprintf(writer, "\r\x1b[2K%s", message)
+			loaderVisible = true
+			return
+		}
+		if loaderVisible {
+			_, _ = fmt.Fprint(writer, "\r\x1b[2K")
+			loaderVisible = false
+		}
+		if interactive && update.URL != "" && !update.Untrusted {
+			_, _ = fmt.Fprintf(writer, "\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\\n", update.URL, message)
+			return
+		}
+		if message != "" {
+			_, _ = fmt.Fprintln(writer, message)
+		}
+	}
+}
+
+const maxLiveProgressRunes = 16 << 10
+
+func sanitizeProgressText(value string) string {
+	value = stripTerminalControls(value, true)
+	runes := []rune(value)
+	if len(runes) > maxLiveProgressRunes {
+		return string(runes[:maxLiveProgressRunes]) + "\n[output truncated]"
+	}
+	return value
+}
+
+func stripTerminalControls(value string, preserveLayout bool) string {
+	var safe strings.Builder
+	for index := 0; index < len(value); {
+		if value[index] == 0x1b {
+			index = skipEscapeSequence(value, index)
+			continue
+		}
+		character, size := utf8.DecodeRuneInString(value[index:])
+		index += size
+		if unicode.IsControl(character) {
+			if preserveLayout && (character == '\n' || character == '\t') {
+				safe.WriteRune(character)
+			} else if !preserveLayout {
+				safe.WriteByte(' ')
+			}
+			continue
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
+}
+
+func skipEscapeSequence(value string, index int) int {
+	index++
+	if index >= len(value) {
+		return index
+	}
+	switch value[index] {
+	case '[':
+		index++
+		for index < len(value) {
+			final := value[index]
+			index++
+			if final >= 0x40 && final <= 0x7e {
+				break
+			}
+		}
+	case ']':
+		index++
+		for index < len(value) {
+			if value[index] == 0x07 {
+				return index + 1
+			}
+			if value[index] == 0x1b && index+1 < len(value) && value[index+1] == '\\' {
+				return index + 2
+			}
+			index++
+		}
+	default:
+		index++
+	}
+	return index
 }
 
 func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
@@ -183,33 +297,7 @@ func renderGitHubStatus(command *cobra.Command, result workflow.StatusResult, js
 }
 
 func sanitizeHumanText(value string) string {
-	var safe strings.Builder
-	for index := 0; index < len(value); {
-		if value[index] == 0x1b {
-			index++
-			if index < len(value) && value[index] == '[' {
-				index++
-				for index < len(value) {
-					final := value[index]
-					index++
-					if final >= 0x40 && final <= 0x7e {
-						break
-					}
-				}
-			} else if index < len(value) {
-				index++
-			}
-			continue
-		}
-		character, size := utf8.DecodeRuneInString(value[index:])
-		index += size
-		if unicode.IsControl(character) {
-			safe.WriteByte(' ')
-			continue
-		}
-		safe.WriteRune(character)
-	}
-	return strings.Join(strings.Fields(safe.String()), " ")
+	return strings.Join(strings.Fields(stripTerminalControls(value, false)), " ")
 }
 
 func parseSourceItem(operation Operation, args []string) (SourceItem, error) {

@@ -23,13 +23,14 @@ const (
 
 // RunResult is rendered by the CLI and carries typed bootstrap data forward.
 type RunResult struct {
-	WorkflowID    string
-	Outcome       RunOutcome
-	Snapshot      githubapi.Snapshot
-	Worktree      gitrepo.Worktree
-	Existing      state.ExistingWorkflow
-	Manifest      *state.Manifest
-	Specification *SpecificationResult
+	WorkflowID     string
+	Outcome        RunOutcome
+	Snapshot       githubapi.Snapshot
+	Worktree       gitrepo.Worktree
+	Existing       state.ExistingWorkflow
+	Manifest       *state.Manifest
+	Specification  *SpecificationResult
+	Implementation *ImplementationResult
 }
 
 // Bootstrap contains the validated transient data passed to Slice 3. It is not
@@ -53,11 +54,15 @@ type RunService struct {
 	manifestWriter state.ManifestWriter
 	workflowIDs    func() (string, error)
 	specification  SpecificationCreator
+	implementation ImplementationRunner
 }
 
 // NewRunService constructs the run application service.
-func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), specification SpecificationCreator) *RunService {
-	return &RunService{locker: locker, existing: existing, github: github, bootstrapper: bootstrapper, manifestWriter: manifestWriter, workflowIDs: workflowIDs, specification: specification}
+func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), specification SpecificationCreator, implementation ImplementationRunner) *RunService {
+	return &RunService{
+		locker: locker, existing: existing, github: github, bootstrapper: bootstrapper,
+		manifestWriter: manifestWriter, workflowIDs: workflowIDs, specification: specification, implementation: implementation,
+	}
 }
 
 // RunGitHub validates one issue and holds the workflow lock through any
@@ -66,7 +71,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if issueNumber <= 0 {
 		return RunResult{}, errors.New("issue number must be positive")
 	}
-	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || service.specification == nil {
+	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || service.specification == nil || service.implementation == nil {
 		return RunResult{}, errors.New("GitHub run service is not fully configured")
 	}
 	issueKey, err := state.GitHubIssueKey(issueNumber)
@@ -150,5 +155,13 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if err != nil {
 		return RunResult{}, err
 	}
-	return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &specification.Manifest, Specification: &specification}, nil
+	if specification.Blocker != nil {
+		return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &specification.Manifest, Specification: &specification}, nil
+	}
+	implementation, err := service.implementation.Implement(ctx, controllerRoot, workflowID)
+	result = RunResult{
+		WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
+		Manifest: &implementation.Manifest, Specification: &specification, Implementation: &implementation,
+	}
+	return result, err
 }

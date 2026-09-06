@@ -68,10 +68,12 @@ func TestRunnerReturnsExitMetadata(t *testing.T) {
 }
 
 func TestRunnerBoundsBothOutputStreams(t *testing.T) {
+	var streamed strings.Builder
 	result, err := processrun.NewRunner().Run(context.Background(), processrun.Request{
-		Argv:        helperArgv("output"),
-		StdoutLimit: 5,
-		StderrLimit: 4,
+		Argv:           helperArgv("output"),
+		StdoutLimit:    5,
+		StderrLimit:    4,
+		StdoutObserver: func(chunk []byte) { streamed.Write(chunk) },
 	})
 	if err != nil {
 		t.Fatalf("run helper: %v", err)
@@ -81,6 +83,9 @@ func TestRunnerBoundsBothOutputStreams(t *testing.T) {
 	}
 	if string(result.Stderr) != "0123" || !result.StderrTruncated {
 		t.Fatalf("stderr = %q, truncated = %v", result.Stderr, result.StderrTruncated)
+	}
+	if got, want := streamed.String(), "abcdefghijklmnopqrstuvwxyz"; got != want {
+		t.Fatalf("streamed stdout = %q, want %q", got, want)
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/assets"
+	"github.com/agenticworkflowdev/cli/internal/checks"
 	"github.com/agenticworkflowdev/cli/internal/prompt"
 )
 
@@ -88,5 +90,34 @@ func TestRendererRejectsMissingPromptKeysAtRenderTime(t *testing.T) {
 func TestRendererRejectsMalformedTemplateAtConstruction(t *testing.T) {
 	if _, err := prompt.NewRenderer("spec", []byte("{{")); err == nil {
 		t.Fatal("malformed prompt template was accepted")
+	}
+}
+
+func TestRendererExposesTypedCheckResultsWithoutReinterpretingOutput(t *testing.T) {
+	renderer, err := prompt.NewRenderer("fix-checks", []byte(`{{range .CheckResults}}{{.Name}}|{{.Directory}}|{{printf "%q" .Command}}|{{.ExitCode}}|{{.Duration}}|{{.TimedOut}}|{{.StdoutTruncated}}|{{.StderrTruncated}}
+BEGIN STDOUT
+{{.Stdout}}
+END STDOUT
+BEGIN STDERR
+{{.Stderr}}
+END STDERR
+{{end}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := prompt.PromptData{CheckResults: []checks.Result{{
+		Name: "unit", Directory: "services/api", Command: []string{"go", "test", "./..."}, ExitCode: 1,
+		Duration: 1500 * time.Millisecond, Stdout: "{{.WorkflowID}}\n<!-- output -->", Stderr: "failure\nline two",
+		StdoutTruncated: true,
+	}}}
+
+	got, err := renderer.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`unit|services/api|["go" "test" "./..."]|1|1.5s|false|true|false`, "{{.WorkflowID}}\n<!-- output -->", "failure\nline two"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered result does not contain %q:\n%s", want, got)
+		}
 	}
 }

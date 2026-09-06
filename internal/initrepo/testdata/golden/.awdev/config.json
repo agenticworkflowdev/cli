@@ -9,8 +9,8 @@
   },
   "checks": [
     {
-      "name": "tests",
-      "command": ["go", "test", "./..."],
+      "name": "whitespace",
+      "command": ["git", "diff", "--check"],
       "timeout": "10m"
     }
   ],

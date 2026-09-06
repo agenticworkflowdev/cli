@@ -481,7 +481,7 @@ func TestRunGitHubProvidesAVisibleProgressWriterToTheService(t *testing.T) {
 		ValidateConfig:   func(string) error { return nil },
 		RunGitHub: func(_ context.Context, _ string, _ int, progress cli.ProgressReporter) (workflow.RunResult, error) {
 			want := "agent progress\n"
-			progress("agent progress")
+			progress(cli.ProgressUpdate{Message: "agent progress"})
 			if got := output.String(); got != want {
 				t.Fatalf("visible progress output = %q, want %q", got, want)
 			}

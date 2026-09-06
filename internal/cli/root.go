@@ -34,8 +34,17 @@ type SourceItem struct {
 	Number int
 }
 
+// ProgressUpdate describes stable progress text or one transient loader frame.
+// An empty transient message clears the active loader.
+type ProgressUpdate struct {
+	Message   string
+	URL       string
+	Transient bool
+	Untrusted bool
+}
+
 // ProgressReporter renders human-readable progress for a long-running command.
-type ProgressReporter func(string)
+type ProgressReporter func(ProgressUpdate)
 
 // Services contains the side-effecting seams used by the CLI.
 type Services struct {

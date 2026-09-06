@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	processrun "github.com/agenticworkflowdev/cli/internal/process"
@@ -19,7 +21,20 @@ import (
 const (
 	jsonlOutputLimit  = 32 << 20
 	stderrOutputLimit = 1 << 20
+	liveEventLimit    = 1 << 20
 )
+
+type progressEnvelope struct {
+	Type     string `json:"type"`
+	ThreadID string `json:"thread_id"`
+	Item     struct {
+		Type             string `json:"type"`
+		Text             string `json:"text"`
+		Command          string `json:"command"`
+		AggregatedOutput string `json:"aggregated_output"`
+		ExitCode         *int   `json:"exit_code"`
+	} `json:"item"`
+}
 
 // Runner invokes a configured Codex executable.
 type Runner struct {
@@ -69,22 +84,26 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 		"--output-last-message", outputPath,
 		"-",
 	}
+	environment, sensitiveValues := authenticationEnvironment()
+	liveProgress := newLiveProgressWriter(request.Progress, sensitiveValues)
 	processResult, err := runner.process.Run(ctx, processrun.Request{
 		Directory:        request.Worktree,
 		Argv:             arguments,
 		Stdin:            []byte(request.Prompt),
-		Environment:      authenticationEnvironment(),
+		Environment:      environment,
 		CleanEnvironment: true,
 		StdoutLimit:      jsonlOutputLimit,
 		StderrLimit:      stderrOutputLimit,
+		StdoutObserver:   liveProgress.Observe,
 	})
+	liveProgress.Close()
 	if err != nil {
 		return agent.RunResult{}, fmt.Errorf("run Codex: %w", err)
 	}
 	if processResult.StdoutTruncated {
 		return agent.RunResult{}, errors.New("Codex JSONL progress exceeded the output limit")
 	}
-	progress, sessionID, err := parseProgress(processResult.Stdout)
+	progress, sessionID, err := parseProgress(processResult.Stdout, sensitiveValues)
 	if err != nil {
 		return agent.RunResult{}, err
 	}
@@ -121,11 +140,15 @@ func validateRequest(request agent.Request) error {
 	return nil
 }
 
-func authenticationEnvironment() map[string]string {
+func authenticationEnvironment() (map[string]string, []string) {
 	environment := map[string]string{"AWDEV_WORKER": "1"}
+	sensitiveValues := make([]string, 0, 3)
 	for _, name := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_HOME", "PATH"} {
 		if value := os.Getenv(name); value != "" {
 			environment[name] = value
+			if name != "CODEX_HOME" && name != "PATH" {
+				sensitiveValues = append(sensitiveValues, value)
+			}
 		}
 	}
 	if environment["CODEX_HOME"] == "" {
@@ -133,10 +156,11 @@ func authenticationEnvironment() map[string]string {
 			environment["CODEX_HOME"] = filepath.Join(home, ".codex")
 		}
 	}
-	return environment
+	sort.Slice(sensitiveValues, func(left, right int) bool { return len(sensitiveValues[left]) > len(sensitiveValues[right]) })
+	return environment, sensitiveValues
 }
 
-func parseProgress(contents []byte) ([]agent.ProgressEvent, string, error) {
+func parseProgress(contents []byte, sensitiveValues []string) ([]agent.ProgressEvent, string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	progress := []agent.ProgressEvent{}
 	var sessionID string
@@ -148,10 +172,7 @@ func parseProgress(contents []byte) ([]agent.ProgressEvent, string, error) {
 			}
 			return nil, "", fmt.Errorf("decode Codex JSONL progress: %w", err)
 		}
-		var header struct {
-			Type     string `json:"type"`
-			ThreadID string `json:"thread_id"`
-		}
+		var header progressEnvelope
 		if err := json.Unmarshal(raw, &header); err != nil {
 			return nil, "", fmt.Errorf("decode Codex JSONL event: %w", err)
 		}
@@ -167,12 +188,131 @@ func parseProgress(contents []byte) ([]agent.ProgressEvent, string, error) {
 			}
 			sessionID = header.ThreadID
 		}
-		progress = append(progress, agent.ProgressEvent{Type: header.Type})
+		progress = append(progress, redactProgressEvent(progressEvent(header), sensitiveValues))
 	}
 	if sessionID == "" {
 		return nil, "", errors.New("Codex session identity is missing")
 	}
 	return progress, sessionID, nil
+}
+
+func redactProgressEvent(event agent.ProgressEvent, sensitiveValues []string) agent.ProgressEvent {
+	for _, sensitiveValue := range sensitiveValues {
+		event.Message = strings.ReplaceAll(event.Message, sensitiveValue, "[REDACTED]")
+	}
+	return event
+}
+
+func progressEvent(event progressEnvelope) agent.ProgressEvent {
+	progress := agent.ProgressEvent{Type: event.Type}
+	if event.Type != "item.started" && event.Type != "item.completed" {
+		return progress
+	}
+	switch event.Item.Type {
+	case "reasoning":
+		if event.Type == "item.completed" {
+			progress.Kind = agent.ProgressReasoning
+			progress.Message = event.Item.Text
+		}
+	case "agent_message":
+		if event.Type == "item.completed" {
+			progress.Kind = agent.ProgressMessage
+			progress.Message = event.Item.Text
+		}
+	case "command_execution":
+		if event.Type == "item.started" {
+			progress.Kind = agent.ProgressCommand
+			progress.Message = event.Item.Command
+		} else {
+			progress.Kind = agent.ProgressCommandOutput
+			progress.Message = event.Item.AggregatedOutput
+			progress.ExitCode = event.Item.ExitCode
+		}
+	}
+	return progress
+}
+
+type liveProgressWriter struct {
+	report          func(agent.ProgressEvent)
+	sensitiveValues []string
+	mutex           sync.Mutex
+	pending         []byte
+	dropping        bool
+	closed          bool
+}
+
+func newLiveProgressWriter(report func(agent.ProgressEvent), sensitiveValues []string) *liveProgressWriter {
+	return &liveProgressWriter{report: report, sensitiveValues: append([]string(nil), sensitiveValues...)}
+}
+
+func (writer *liveProgressWriter) Observe(contents []byte) {
+	if writer == nil || writer.report == nil {
+		return
+	}
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	if writer.closed {
+		return
+	}
+	for len(contents) > 0 {
+		if writer.dropping {
+			newline := bytes.IndexByte(contents, '\n')
+			if newline < 0 {
+				return
+			}
+			writer.dropping = false
+			contents = contents[newline+1:]
+			continue
+		}
+
+		newline := bytes.IndexByte(contents, '\n')
+		if newline < 0 {
+			if len(writer.pending)+len(contents) > liveEventLimit {
+				writer.pending = nil
+				writer.dropping = true
+				return
+			}
+			writer.pending = append(writer.pending, contents...)
+			return
+		}
+		if len(writer.pending)+newline <= liveEventLimit {
+			writer.pending = append(writer.pending, contents[:newline]...)
+			writer.emit()
+		}
+		writer.pending = nil
+		contents = contents[newline+1:]
+	}
+}
+
+func (writer *liveProgressWriter) Close() {
+	if writer == nil || writer.report == nil {
+		return
+	}
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	if writer.closed {
+		return
+	}
+	if !writer.dropping && len(writer.pending) > 0 {
+		writer.emit()
+	}
+	writer.pending = nil
+	writer.closed = true
+}
+
+func (writer *liveProgressWriter) emit() {
+	line := bytes.TrimSpace(writer.pending)
+	if len(line) == 0 {
+		return
+	}
+	var envelope progressEnvelope
+	if err := json.Unmarshal(line, &envelope); err != nil {
+		return
+	}
+	event := progressEvent(envelope)
+	if event.Kind != "" {
+		writer.report(redactProgressEvent(event, writer.sensitiveValues))
+	}
 }
 
 func readFinalOutput(path string) (json.RawMessage, error) {

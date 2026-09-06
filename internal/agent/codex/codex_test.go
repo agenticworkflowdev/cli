@@ -122,6 +122,41 @@ func TestRunnerParsesLargeAndUnknownJSONLEventsWithoutAScannerLimit(t *testing.T
 	}
 }
 
+func TestRunnerStreamsReadableProgressEventsWhileTheProcessRuns(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "secret-value")
+	stdout := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thread-live"}`,
+		`{"type":"item.completed","item":{"type":"reasoning","text":"Inspecting the project"}}`,
+		`{"type":"item.started","item":{"type":"command_execution","command":"go test ./..."}}`,
+		`{"type":"item.completed","item":{"type":"command_execution","command":"go test ./...","aggregated_output":"ok secret-value\n","exit_code":0}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Implementation complete"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n") + "\n"
+	process := &fakeProcessRunner{stdout: []byte(stdout), finalOutput: []byte(readFixture(t, "completed.json"))}
+	runner := mustRunner(t, process)
+	var streamed []agent.ProgressEvent
+	request := validRequest(t, agent.AccessWorkspaceWrite)
+	request.Progress = func(event agent.ProgressEvent) { streamed = append(streamed, event) }
+
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	want := []agent.ProgressEvent{
+		{Type: "item.completed", Kind: agent.ProgressReasoning, Message: "Inspecting the project"},
+		{Type: "item.started", Kind: agent.ProgressCommand, Message: "go test ./..."},
+		{Type: "item.completed", Kind: agent.ProgressCommandOutput, Message: "ok [REDACTED]\n", ExitCode: &zero},
+		{Type: "item.completed", Kind: agent.ProgressMessage, Message: "Implementation complete"},
+	}
+	if !reflect.DeepEqual(streamed, want) {
+		t.Fatalf("streamed progress = %#v, want %#v", streamed, want)
+	}
+	if got, want := result.Progress[3].Message, "ok [REDACTED]\n"; got != want {
+		t.Fatalf("retained command output = %q, want %q", got, want)
+	}
+}
+
 func TestRunnerRejectsMalformedProgressAndMissingFinalOutput(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -166,6 +201,11 @@ type fakeProcessRunner struct {
 
 func (runner *fakeProcessRunner) Run(_ context.Context, request processrun.Request) (processrun.Result, error) {
 	runner.request = request
+	if request.StdoutObserver != nil && len(runner.stdout) > 0 {
+		middle := len(runner.stdout) / 2
+		request.StdoutObserver(runner.stdout[:middle])
+		request.StdoutObserver(runner.stdout[middle:])
+	}
 	if len(runner.finalOutput) > 0 {
 		outputPath := argumentAfter(request.Argv, "--output-last-message")
 		if err := os.WriteFile(outputPath, runner.finalOutput, 0o600); err != nil {

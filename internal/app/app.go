@@ -3,14 +3,20 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/agent/codex"
 	"github.com/agenticworkflowdev/cli/internal/assets"
+	"github.com/agenticworkflowdev/cli/internal/checks"
 	"github.com/agenticworkflowdev/cli/internal/cli"
 	"github.com/agenticworkflowdev/cli/internal/config"
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
@@ -23,7 +29,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const agentHeartbeatInterval = 15 * time.Second
+const agentSpinnerInterval = 100 * time.Millisecond
+
+var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // NewCommand constructs the production awdev command.
 func NewCommand() *cobra.Command {
@@ -59,7 +67,15 @@ func NewCommand() *cobra.Command {
 			if configuration.Agent.Provider != agent.ProviderCodex {
 				return workflow.RunResult{}, fmt.Errorf("agent provider %q is unavailable", configuration.Agent.Provider)
 			}
-			promptRenderer, err := prompt.NewRenderer(assets.PromptSpec, installed.Prompts[assets.PromptSpec].Contents)
+			specificationPrompt, err := prompt.NewRenderer(assets.PromptSpec, installed.Prompts[assets.PromptSpec].Contents)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
+			implementationPrompt, err := prompt.NewRenderer(assets.PromptImplement, installed.Prompts[assets.PromptImplement].Contents)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
+			fixChecksPrompt, err := prompt.NewRenderer(assets.PromptFixChecks, installed.Prompts[assets.PromptFixChecks].Contents)
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
@@ -71,18 +87,40 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
-			notifyingRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentHeartbeatInterval}
+			specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval}
+			implementationRunner := &progressAgentRunner{
+				runner: codexRunner, report: progress, interval: agentSpinnerInterval,
+				startMessage: "Implementing the specification. This can take a few moments...",
+			}
 			transitionService := state.NewTransitionService(manifestStore)
 			specificationService := workflow.NewSpecificationService(
 				manifestStore,
 				transitionService,
-				promptRenderer,
-				notifyingRunner,
+				specificationPrompt,
+				specificationRunner,
 				resultDecoder,
 				installed.Schemas[assets.SchemaAgentResult].Path,
 				configuration.Agent.Timeout,
 			)
-			runService := workflow.NewRunService(state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore, state.NewWorkflowID, specificationService)
+			reportingSpecification := &reportingSpecificationCreator{creator: specificationService, report: progress}
+			implementationService := workflow.NewImplementationService(
+				manifestStore,
+				transitionService,
+				implementationPrompt,
+				fixChecksPrompt,
+				implementationRunner,
+				resultDecoder,
+				checks.NewExecutor(processRunner),
+				gitrepo.NewDiffInspector("git", processRunner),
+				installed.Schemas[assets.SchemaAgentResult].Path,
+				configuration.Agent.Timeout,
+				configuration.Checks,
+				configuration.ProtectedPaths,
+			)
+			runService := workflow.NewRunService(
+				state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
+				state.NewWorkflowID, reportingSpecification, implementationService,
+			)
 			return runService.RunGitHub(ctx, controllerRoot, issueNumber)
 		},
 		StatusGitHub: statusService.StatusGitHub,
@@ -92,10 +130,35 @@ func NewCommand() *cobra.Command {
 	})
 }
 
+type reportingSpecificationCreator struct {
+	creator workflow.SpecificationCreator
+	report  cli.ProgressReporter
+}
+
+func (creator *reportingSpecificationCreator) Create(ctx context.Context, controllerRoot, workflowID string) (workflow.SpecificationResult, error) {
+	result, err := creator.creator.Create(ctx, controllerRoot, workflowID)
+	if err != nil || result.Blocker != nil || result.Manifest.SpecificationPath == "" || creator.report == nil {
+		return result, err
+	}
+	specificationPath := result.Manifest.SpecificationPath
+	absolutePath := filepath.Join(
+		controllerRoot,
+		filepath.FromSlash(result.Manifest.Worktree),
+		filepath.FromSlash(specificationPath),
+	)
+	creator.report(cli.ProgressUpdate{
+		Message: path.Base(specificationPath),
+		URL:     (&url.URL{Scheme: "file", Path: absolutePath}).String(),
+	})
+	return result, nil
+}
+
 type progressAgentRunner struct {
-	runner   agent.Runner
-	report   func(string)
-	interval time.Duration
+	runner       agent.Runner
+	report       cli.ProgressReporter
+	interval     time.Duration
+	startMessage string
+	startOnce    sync.Once
 }
 
 func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Request) (agent.RunResult, error) {
@@ -105,7 +168,22 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	if runner.report == nil {
 		return runner.runner.Run(ctx, request)
 	}
-	runner.report("Creating specification with Codex. This can take a few minutes...")
+	message := runner.startMessage
+	if message == "" {
+		message = "Creating specification. This can take a few moments..."
+	}
+	runner.startOnce.Do(func() {
+		runner.report(cli.ProgressUpdate{Message: message})
+	})
+	upstreamProgress := request.Progress
+	request.Progress = func(event agent.ProgressEvent) {
+		if upstreamProgress != nil {
+			upstreamProgress(event)
+		}
+		if message := readableAgentProgress(event); message != "" {
+			runner.report(cli.ProgressUpdate{Message: message, Untrusted: true})
+		}
+	}
 	if runner.interval <= 0 {
 		return runner.runner.Run(ctx, request)
 	}
@@ -117,11 +195,14 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	go func() {
 		defer reporting.Done()
 		defer ticker.Stop()
+		frame := 0
 		for {
 			select {
 			case <-ticker.C:
-				runner.report("Codex is still working...")
+				runner.report(cli.ProgressUpdate{Message: spinnerFrames[frame], Transient: true})
+				frame = (frame + 1) % len(spinnerFrames)
 			case <-done:
+				runner.report(cli.ProgressUpdate{Transient: true})
 				return
 			}
 		}
@@ -131,4 +212,53 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	close(done)
 	reporting.Wait()
 	return result, err
+}
+
+func readableAgentProgress(event agent.ProgressEvent) string {
+	message := strings.TrimRight(event.Message, "\r\n")
+	switch event.Kind {
+	case agent.ProgressMessage:
+		if message != "" {
+			var outcome agent.Outcome
+			if json.Unmarshal([]byte(message), &outcome) == nil {
+				switch {
+				case outcome.Status == agent.OutcomeCompleted && outcome.Summary != "":
+					message = outcome.Summary
+				case outcome.Status == agent.OutcomeBlocked && outcome.Question != "":
+					return prefixProgressLines("Agent question: ", outcome.Question)
+				}
+			}
+			return prefixProgressLines("Agent: ", message)
+		}
+	case agent.ProgressReasoning:
+		if message != "" {
+			return prefixProgressLines("Reasoning: ", message)
+		}
+	case agent.ProgressCommand:
+		if message != "" {
+			return prefixProgressLines("Command: ", message)
+		}
+	case agent.ProgressCommandOutput:
+		var output strings.Builder
+		if message != "" {
+			output.WriteString("Command output:\n")
+			output.WriteString(prefixProgressLines("│ ", message))
+		}
+		if event.ExitCode != nil {
+			if output.Len() > 0 {
+				output.WriteByte('\n')
+			}
+			fmt.Fprintf(&output, "Command exit code: %d", *event.ExitCode)
+		}
+		return output.String()
+	}
+	return ""
+}
+
+func prefixProgressLines(prefix, message string) string {
+	lines := strings.Split(message, "\n")
+	for index := range lines {
+		lines[index] = prefix + lines[index]
+	}
+	return strings.Join(lines, "\n")
 }

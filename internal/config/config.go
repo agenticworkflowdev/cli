@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
+	"github.com/agenticworkflowdev/cli/internal/checks"
 )
 
 const (
@@ -28,7 +29,7 @@ type Config struct {
 	SchemaVersion  int
 	Agent          Agent
 	Codex          Codex
-	Checks         []Check
+	Checks         []checks.Definition
 	Review         Review
 	ProtectedPaths []string
 }
@@ -42,13 +43,6 @@ type Agent struct {
 // Codex configures direct Codex process invocation.
 type Codex struct {
 	Binary string
-}
-
-// Check configures one directly invoked deterministic repository check.
-type Check struct {
-	Name    string
-	Command []string
-	Timeout time.Duration
 }
 
 // Review bounds independent review-agent invocations.
@@ -75,9 +69,10 @@ type rawCodex struct {
 }
 
 type rawCheck struct {
-	Name    string   `json:"name"`
-	Command []string `json:"command"`
-	Timeout *string  `json:"timeout"`
+	Name      string   `json:"name"`
+	Directory string   `json:"directory"`
+	Command   []string `json:"command"`
+	Timeout   *string  `json:"timeout"`
 }
 
 type rawReview struct {
@@ -148,7 +143,7 @@ func Parse(contents []byte) (Config, error) {
 		return Config{}, fmt.Errorf("checks is required")
 	}
 
-	checks := make([]Check, len(*raw.Checks))
+	checkDefinitions := make([]checks.Definition, len(*raw.Checks))
 	for index, check := range *raw.Checks {
 		if strings.TrimSpace(check.Name) == "" {
 			return Config{}, fmt.Errorf("checks[%d].name must not be empty", index)
@@ -159,11 +154,14 @@ func Parse(contents []byte) (Config, error) {
 		if strings.TrimSpace(check.Command[0]) == "" {
 			return Config{}, fmt.Errorf("checks[%d].command[0] must not be empty", index)
 		}
+		if !checks.ValidDirectory(check.Directory) {
+			return Config{}, fmt.Errorf("checks[%d].directory must be a repository-relative directory", index)
+		}
 		timeout, err := positiveDuration(check.Timeout, defaultCheckTimeout)
 		if err != nil {
 			return Config{}, fmt.Errorf("checks[%d].timeout must be a positive duration", index)
 		}
-		checks[index] = Check{Name: check.Name, Command: append([]string(nil), check.Command...), Timeout: timeout}
+		checkDefinitions[index] = checks.Definition{Name: check.Name, Directory: check.Directory, Command: append([]string(nil), check.Command...), Timeout: timeout}
 	}
 
 	if raw.Review == nil {
@@ -187,7 +185,7 @@ func Parse(contents []byte) (Config, error) {
 		SchemaVersion:  *raw.SchemaVersion,
 		Agent:          Agent{Provider: agent.Provider(raw.Agent.Provider), Timeout: agentTimeout},
 		Codex:          Codex{Binary: raw.Codex.Binary},
-		Checks:         checks,
+		Checks:         checkDefinitions,
 		Review:         Review{MaxAttempts: maxAttempts},
 		ProtectedPaths: append([]string(nil), raw.ProtectedPaths...),
 	}, nil

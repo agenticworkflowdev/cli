@@ -119,6 +119,15 @@ func TestRunGitHubCreatesValidatedWorktreeThenSavesManifest(t *testing.T) {
 	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
 		t.Fatalf("initialize repository: %v", err)
 	}
+	configPath := filepath.Join(repository, ".awdev", "config.json")
+	configContents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configContents = []byte(strings.Replace(string(configContents), `["go", "test", "./..."]`, `["go", "version"]`, 1))
+	if err := os.WriteFile(configPath, configContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	binDirectory := t.TempDir()
 	ghPath := filepath.Join(binDirectory, "gh")
@@ -173,10 +182,10 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 		t.Fatal("saved manifest was not found by issue identity")
 	}
 	manifest := *existing.Manifest
-	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseSpec || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
+	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseImplementation || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
 		t.Fatalf("saved manifest = %#v", manifest)
 	}
-	wantOutput := "Creating specification with Codex. This can take a few minutes...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
+	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
 	if got := output.String(); got != wantOutput {
 		t.Fatalf("output = %q, want %q", got, wantOutput)
 	}

@@ -20,12 +20,26 @@ type Request struct {
 	OutputSchema    string
 	OutputDirectory string
 	Access          AccessLevel
+	Progress        func(ProgressEvent)
 }
+
+// ProgressKind identifies a provider-neutral event suitable for live display.
+type ProgressKind string
+
+const (
+	ProgressMessage       ProgressKind = "message"
+	ProgressReasoning     ProgressKind = "reasoning"
+	ProgressCommand       ProgressKind = "command"
+	ProgressCommandOutput ProgressKind = "command_output"
+)
 
 // ProgressEvent captures stable progress metadata without coupling callers to
 // provider-specific event payloads.
 type ProgressEvent struct {
-	Type string
+	Type     string
+	Kind     ProgressKind
+	Message  string
+	ExitCode *int
 }
 
 // RunResult contains the authoritative final output and observed progress.

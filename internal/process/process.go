@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -30,6 +31,7 @@ type Request struct {
 	CleanEnvironment bool
 	StdoutLimit      int
 	StderrLimit      int
+	StdoutObserver   func([]byte)
 }
 
 // Result records bounded output and process exit metadata.
@@ -148,6 +150,9 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 	command.Dir = request.Directory
 	command.Stdin = bytes.NewReader(request.Stdin)
 	command.Stdout = stdout
+	if request.StdoutObserver != nil {
+		command.Stdout = observedWriter{destination: stdout, observe: request.StdoutObserver}
+	}
 	command.Stderr = stderr
 	command.Env = processEnvironment(request.Environment, request.CleanEnvironment)
 	if err := configureProcessTree(command); err != nil {
@@ -207,6 +212,19 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 		return result, &ExitError{Argv: append([]string(nil), request.Argv...), Result: result}
 	}
 	return result, nil
+}
+
+type observedWriter struct {
+	destination io.Writer
+	observe     func([]byte)
+}
+
+func (writer observedWriter) Write(contents []byte) (int, error) {
+	written, err := writer.destination.Write(contents)
+	if written > 0 {
+		writer.observe(contents[:written])
+	}
+	return written, err
 }
 
 func processResult(waitErr error, stdout, stderr *boundedBuffer, duration time.Duration) Result {

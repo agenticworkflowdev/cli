@@ -15,7 +15,7 @@ const validConfig = `{
   "schema_version": 1,
   "agent": {"provider": "codex"},
   "codex": {"binary": "codex"},
-  "checks": [{"name": "tests", "command": ["go", "test", "./..."]}],
+  "checks": [{"name": "tests", "directory": "services/api", "command": ["go", "test", "./..."]}],
   "review": {},
   "protected_paths": ["docs/generated", ".github/workflows/"]
 }`
@@ -47,6 +47,9 @@ func TestParseAppliesDefaultsAndPreservesArgumentArrays(t *testing.T) {
 	if strings.Join(got.Checks[0].Command, "|") != "go|test|./..." {
 		t.Errorf("check command = %#v, want argument array preserved", got.Checks[0].Command)
 	}
+	if got.Checks[0].Directory != "services/api" {
+		t.Errorf("check directory = %q, want services/api", got.Checks[0].Directory)
+	}
 	wantPaths := "docs/generated|.github/workflows/"
 	if strings.Join(got.ProtectedPaths, "|") != wantPaths {
 		t.Errorf("protected paths = %#v, want %q", got.ProtectedPaths, wantPaths)
@@ -76,6 +79,10 @@ func TestParseRejectsInvalidConfiguration(t *testing.T) {
 		{name: "zero check timeout", input: strings.Replace(validConfig, `"command": ["go", "test", "./..."]`, `"command": ["go", "test", "./..."], "timeout": "0s"`, 1), wantErr: "checks[0].timeout must be a positive duration"},
 		{name: "negative check timeout", input: strings.Replace(validConfig, `"command": ["go", "test", "./..."]`, `"command": ["go", "test", "./..."], "timeout": "-1s"`, 1), wantErr: "checks[0].timeout must be a positive duration"},
 		{name: "malformed check timeout", input: strings.Replace(validConfig, `"command": ["go", "test", "./..."]`, `"command": ["go", "test", "./..."], "timeout": "later"`, 1), wantErr: "checks[0].timeout must be a positive duration"},
+		{name: "absolute check directory", input: strings.Replace(validConfig, `"directory": "services/api"`, `"directory": "/tmp"`, 1), wantErr: "checks[0].directory must be a repository-relative directory"},
+		{name: "traversing check directory", input: strings.Replace(validConfig, `"directory": "services/api"`, `"directory": "../outside"`, 1), wantErr: "checks[0].directory must be a repository-relative directory"},
+		{name: "non-normal check directory", input: strings.Replace(validConfig, `"directory": "services/api"`, `"directory": "services//api"`, 1), wantErr: "checks[0].directory must be a repository-relative directory"},
+		{name: "trailing slash check directory", input: strings.Replace(validConfig, `"directory": "services/api"`, `"directory": "services/api/"`, 1), wantErr: "checks[0].directory must be a repository-relative directory"},
 		{name: "absolute protected path", input: strings.Replace(validConfig, `"docs/generated"`, `"/etc"`, 1), wantErr: "protected_paths[0] must be a repository-relative prefix"},
 		{name: "traversing protected path", input: strings.Replace(validConfig, `"docs/generated"`, `"../outside"`, 1), wantErr: "protected_paths[0] must be a repository-relative prefix"},
 		{name: "embedded traversal protected path", input: strings.Replace(validConfig, `"docs/generated"`, `"docs/../outside"`, 1), wantErr: "protected_paths[0] must be a repository-relative prefix"},
