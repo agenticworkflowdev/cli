@@ -8,8 +8,62 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agenticworkflowdev/cli/internal/review"
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
+
+func TestAtomicReviewFailuresLeaveACompleteOldOrNewResult(t *testing.T) {
+	for _, stage := range []string{"create", "write", "flush", "close", "rename", "directory sync"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			manifest := validManifest(root)
+			store := state.NewStore()
+			if err := store.Save(root, manifest); err != nil {
+				t.Fatalf("save manifest: %v", err)
+			}
+			old := review.Result{Approved: false, Findings: []review.Finding{{Severity: review.SeverityHigh, Message: "Old finding"}}}
+			if err := store.SaveReview(root, manifest.WorkflowID, old); err != nil {
+				t.Fatalf("save old review: %v", err)
+			}
+			next := review.Result{Approved: true, Findings: []review.Finding{}}
+
+			faulty := state.NewStoreWithFileSystem(&faultFileSystem{base: state.OSFileSystem{}, stage: stage})
+			if err := faulty.SaveReview(root, manifest.WorkflowID, next); err == nil {
+				t.Fatalf("%s failure was not reported", stage)
+			}
+			got, err := store.ReadReview(root, manifest.WorkflowID)
+			if err != nil {
+				t.Fatalf("reader observed invalid review: %v", err)
+			}
+			wantApproved := old.Approved
+			if stage == "directory sync" {
+				wantApproved = next.Approved
+			}
+			if got.Approved != wantApproved {
+				t.Fatalf("approved = %t, want complete result with approved = %t", got.Approved, wantApproved)
+			}
+		})
+	}
+}
+
+func TestReviewInvalidationMakesPersistedEvidenceUnreadable(t *testing.T) {
+	root := t.TempDir()
+	manifest := validManifest(root)
+	store := state.NewStore()
+	if err := store.Save(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+	result := review.Result{Approved: false, Findings: []review.Finding{{Severity: review.SeverityHigh, Message: "Stale after correction"}}}
+	if err := store.SaveReview(root, manifest.WorkflowID, result); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InvalidateReview(root, manifest.WorkflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadReview(root, manifest.WorkflowID); err == nil || !strings.Contains(err.Error(), "invalidated") {
+		t.Fatalf("ReadReview() error = %v, want invalidated evidence", err)
+	}
+}
 
 func TestAtomicStoreFailuresLeaveACompleteOldOrNewManifest(t *testing.T) {
 	for _, stage := range []string{"create", "write", "flush", "close", "rename", "directory sync"} {

@@ -139,15 +139,19 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	if err := store.validateRegularOrMissing(manifestPath, true); err != nil {
 		return fmt.Errorf("validate workflow manifest path: %w", err)
 	}
-	temporary, err := store.filesystem.CreateTemp(directory, ".manifest-*.tmp")
+	return store.replaceJSON(directory, manifestPath, ".manifest-*.tmp", "workflow manifest", manifest)
+}
+
+func (store *Store) replaceJSON(directory, destination, pattern, label string, value any) error {
+	temporary, err := store.filesystem.CreateTemp(directory, pattern)
 	if err != nil {
-		return fmt.Errorf("create temporary workflow manifest: %w", err)
+		return fmt.Errorf("create temporary %s: %w", label, err)
 	}
 	temporaryPath := temporary.Name()
 	if filepath.Dir(temporaryPath) != directory {
 		_ = temporary.Close()
 		_ = store.filesystem.Remove(temporaryPath)
-		return errors.New("temporary workflow manifest was created outside its state directory")
+		return fmt.Errorf("temporary %s was created outside its state directory", label)
 	}
 	closed := false
 	defer func() {
@@ -160,33 +164,33 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	encoder := json.NewEncoder(temporary)
 	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(manifest); err != nil {
-		return fmt.Errorf("encode temporary workflow manifest: %w", err)
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Errorf("encode temporary %s: %w", label, err)
 	}
 	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush temporary workflow manifest: %w", err)
+		return fmt.Errorf("flush temporary %s: %w", label, err)
 	}
 	if err := temporary.Close(); err != nil {
 		closed = true
-		return fmt.Errorf("close temporary workflow manifest: %w", err)
+		return fmt.Errorf("close temporary %s: %w", label, err)
 	}
 	closed = true
-	if err := store.filesystem.Rename(temporaryPath, manifestPath); err != nil {
-		return fmt.Errorf("replace workflow manifest: %w", err)
+	if err := store.filesystem.Rename(temporaryPath, destination); err != nil {
+		return fmt.Errorf("replace %s: %w", label, err)
 	}
 	if runtime.GOOS == "windows" {
 		return nil
 	}
 	directoryHandle, err := store.filesystem.OpenDirectory(directory)
 	if err != nil {
-		return fmt.Errorf("open workflow state directory for sync: %w", err)
+		return fmt.Errorf("open %s state directory for sync: %w", label, err)
 	}
 	if err := directoryHandle.Sync(); err != nil {
 		_ = directoryHandle.Close()
-		return fmt.Errorf("sync workflow state directory: %w", err)
+		return fmt.Errorf("sync %s state directory: %w", label, err)
 	}
 	if err := directoryHandle.Close(); err != nil {
-		return fmt.Errorf("close workflow state directory: %w", err)
+		return fmt.Errorf("close %s state directory: %w", label, err)
 	}
 	return nil
 }

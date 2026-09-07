@@ -63,7 +63,7 @@ func TestConfiguredImplementationAgentTimeoutKillsIgnoringProcessGroup(t *testin
 		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
 		&processTreeAgent{runner: processRunner, command: processTreeCommand(markers), events: &events},
 		&implementationDecoder{events: &events}, &implementationChecks{events: &events},
-		&implementationDiff{events: &events}, filepath.Join(t.TempDir(), "schema.json"), 200*time.Millisecond, nil, nil,
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), 200*time.Millisecond, nil, nil,
 	)
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)

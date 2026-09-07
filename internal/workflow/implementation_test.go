@@ -29,13 +29,13 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	checkRunner := &implementationChecks{events: &events, results: [][]checks.Result{checkResults}}
 	diff := &implementationDiff{events: &events}
 	definitions := []checks.Definition{{Name: "tests", Command: []string{"go", "test", "./..."}, Timeout: time.Minute}}
-	service := workflow.NewImplementationService(stateStore, stateStore, implementPrompt, repairPrompt, agentRunner, decoder, checkRunner, diff, filepath.Join(t.TempDir(), "schema.json"), time.Minute, definitions, []string{"generated"})
+	service := workflow.NewImplementationService(stateStore, stateStore, implementPrompt, repairPrompt, agentRunner, decoder, checkRunner, diff, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, definitions, []string{"generated"})
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
 	if err != nil {
 		t.Fatalf("implement: %v", err)
 	}
-	wantEvents := []string{"read", "transition:implementation/running", "render:implement", "diff:capture", "agent", "diff:inspect", "decode", "checks"}
+	wantEvents := []string{"read", "transition:implementation/running", "render:implement", "diff:capture", "agent", "diff:inspect", "decode", "worktree:capture", "checks", "worktree:inspect"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -64,6 +64,31 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	}
 }
 
+func TestImplementationDoesNotTrustChecksThatMutateTheWorktree(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := implementationManifest(t)
+	stateStore := &implementationState{manifest: manifest, events: &events}
+	worktree := &worktreeStateFake{events: &events, changed: [][]string{{"generated.go"}}}
+	service := workflow.NewImplementationService(
+		stateStore, stateStore,
+		&implementationPrompt{label: "implement", rendered: "implement", events: &events},
+		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
+		&implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`)}}}},
+		&implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "done"}}},
+		&implementationChecks{events: &events, results: [][]checks.Result{{{Name: "tests", ExitCode: 0}}}},
+		&implementationDiff{events: &events}, worktree,
+		filepath.Join(t.TempDir(), "schema.json"), time.Minute, []checks.Definition{{Name: "tests", Command: []string{"go", "test"}, Timeout: time.Minute}}, nil,
+	)
+
+	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err == nil || !strings.Contains(err.Error(), "deterministic checks changed worktree paths") {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Manifest.Status != state.StatusFailed || !reflect.DeepEqual(result.CheckedState, gitrepo.WorktreeBaseline{}) {
+		t.Fatalf("mutating checks produced trusted evidence: %#v", result)
+	}
+}
+
 func TestImplementationRepairsFailedChecksWithExactEvidenceAndRerunsAllChecks(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)
@@ -87,7 +112,7 @@ func TestImplementationRepairsFailedChecksWithExactEvidenceAndRerunsAllChecks(t 
 		{Name: "unit", Command: failed.Command, Timeout: time.Minute},
 		{Name: "lint", Command: passingOther.Command, Timeout: time.Minute},
 	}
-	service := workflow.NewImplementationService(stateStore, stateStore, implementPrompt, repairPrompt, agentRunner, decoder, checkRunner, diff, filepath.Join(t.TempDir(), "schema.json"), time.Minute, definitions, nil)
+	service := workflow.NewImplementationService(stateStore, stateStore, implementPrompt, repairPrompt, agentRunner, decoder, checkRunner, diff, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, definitions, nil)
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
 	if err != nil {
@@ -129,7 +154,7 @@ func TestImplementationStopsAfterThreeCheckFixInvocations(t *testing.T) {
 		stateStore, stateStore,
 		&implementationPrompt{label: "implement", rendered: "implement", events: &events},
 		repairPrompt,
-		agentRunner, decoder, checkRunner, &implementationDiff{events: &events},
+		agentRunner, decoder, checkRunner, &implementationDiff{events: &events}, &worktreeStateFake{events: &events},
 		filepath.Join(t.TempDir(), "schema.json"), time.Minute,
 		[]checks.Definition{{Name: "tests", Command: []string{"go", "test", "./..."}, Timeout: time.Minute}}, nil,
 	)
@@ -174,7 +199,7 @@ func TestImplementationForwardsBlockerWithoutRunningChecks(t *testing.T) {
 		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
 		&implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"blocked","question":"Which API?"}`)}}}},
 		&implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeBlocked, Question: "Which API?"}}},
-		checkRunner, &implementationDiff{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, nil, nil,
+		checkRunner, &implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, nil, nil,
 	)
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
@@ -201,6 +226,7 @@ func TestImplementationRejectsProtectedDiffWithoutRepair(t *testing.T) {
 		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
 		agentRunner, &implementationDecoder{events: &events}, checkRunner,
 		&implementationDiff{events: &events, offending: [][]string{{".gitmodules", "generated/secret.txt"}}},
+		&worktreeStateFake{events: &events},
 		filepath.Join(t.TempDir(), "schema.json"), time.Minute, nil, []string{"generated"},
 	)
 
@@ -240,7 +266,7 @@ func TestImplementationTechnicalFailuresPersistSanitizedFailedState(t *testing.T
 				&implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`)}, err: test.agentError}}},
 				&implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "done"}}, errors: []error{test.decodeErr}},
 				&implementationChecks{events: &events, errors: []error{test.checkError}},
-				&implementationDiff{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+				&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
 				[]checks.Definition{{Name: "tests", Command: []string{"go", "test"}, Timeout: time.Minute}}, nil,
 			)
 
@@ -265,7 +291,7 @@ func TestImplementationAppliesConfiguredTimeoutToAgentInvocation(t *testing.T) {
 		&implementationPrompt{label: "implement", rendered: "implement", events: &events},
 		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
 		runner, &implementationDecoder{events: &events}, &implementationChecks{events: &events},
-		&implementationDiff{events: &events}, filepath.Join(t.TempDir(), "schema.json"), 10*time.Millisecond, nil, nil,
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), 10*time.Millisecond, nil, nil,
 	)
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
@@ -287,7 +313,7 @@ func TestImplementationDoesNotStartAgentBeforeRunningTransitionIsDurable(t *test
 		&implementationPrompt{label: "implement", rendered: "implement", events: &events},
 		&implementationPrompt{label: "repair", rendered: "repair", events: &events},
 		runner, &implementationDecoder{events: &events}, &implementationChecks{events: &events},
-		&implementationDiff{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, nil, nil,
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute, nil, nil,
 	)
 
 	if _, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID); err == nil {

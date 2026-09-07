@@ -11,6 +11,7 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/assets"
 	"github.com/agenticworkflowdev/cli/internal/checks"
 	"github.com/agenticworkflowdev/cli/internal/prompt"
+	"github.com/agenticworkflowdev/cli/internal/review"
 )
 
 func TestDefaultSpecificationPromptMatchesGolden(t *testing.T) {
@@ -118,6 +119,62 @@ END STDERR
 	for _, want := range []string{`unit|services/api|["go" "test" "./..."]|1|1.5s|false|true|false`, "{{.WorkflowID}}\n<!-- output -->", "failure\nline two"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered result does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDefaultReviewPromptIncludesPinnedSpecAndCompleteCheckEvidence(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/review.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := prompt.NewRenderer("review", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := renderer.Render(prompt.PromptData{
+		SpecificationPath: ".awdev/specs/gh-17-title.md",
+		BaseSHA:           strings.Repeat("a", 40),
+		Branch:            "gh-17-title",
+		CheckResults: []checks.Result{{
+			Name: "unit", Command: []string{"go", "test", "./..."}, ExitCode: 0,
+			Stdout: "literal {{.WorkflowID}}", Duration: time.Second,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".awdev/specs/gh-17-title.md", strings.Repeat("a", 40), "gh-17-title", "unit", `["go" "test" "./..."]`, "literal {{.WorkflowID}}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("review prompt does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDefaultCorrectionPromptIncludesStructuredFindingsAsLiteralData(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/fix-review.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := prompt.NewRenderer("fix-review", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := renderer.Render(prompt.PromptData{
+		SpecificationPath: ".awdev/specs/gh-17-title.md",
+		BaseSHA:           strings.Repeat("b", 40),
+		Branch:            "gh-17-title",
+		ReviewFindings: []review.Finding{{
+			Severity: review.SeverityHigh, Path: "internal/run.go", Line: 42,
+			Message: "literal {{.WorkflowID}}\n<!-- review data -->",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".awdev/specs/gh-17-title.md", strings.Repeat("b", 40), "gh-17-title", "high", "internal/run.go", "42", `literal {{.WorkflowID}}\n<!-- review data -->`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("correction prompt does not contain %q:\n%s", want, got)
 		}
 	}
 }

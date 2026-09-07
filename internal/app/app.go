@@ -24,6 +24,7 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
 	processrun "github.com/agenticworkflowdev/cli/internal/process"
 	"github.com/agenticworkflowdev/cli/internal/prompt"
+	"github.com/agenticworkflowdev/cli/internal/review"
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 	"github.com/spf13/cobra"
@@ -79,7 +80,19 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
+			reviewPrompt, err := prompt.NewRenderer(assets.PromptReview, installed.Prompts[assets.PromptReview].Contents)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
+			fixReviewPrompt, err := prompt.NewRenderer(assets.PromptFixReview, installed.Prompts[assets.PromptFixReview].Contents)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
 			resultDecoder, err := agent.NewResultDecoder(installed.Schemas[assets.SchemaAgentResult].Contents)
+			if err != nil {
+				return workflow.RunResult{}, err
+			}
+			reviewDecoder, err := review.NewResultDecoder(installed.Schemas[assets.SchemaReviewResult].Contents)
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
@@ -91,6 +104,10 @@ func NewCommand() *cobra.Command {
 			implementationRunner := &progressAgentRunner{
 				runner: codexRunner, report: progress, interval: agentSpinnerInterval,
 				startMessage: "Implementing the specification. This can take a few moments...",
+			}
+			reviewRunner := &progressAgentRunner{
+				runner: codexRunner, report: progress, interval: agentSpinnerInterval,
+				startMessage: "Reviewing the implementation. This can take a few moments...",
 			}
 			transitionService := state.NewTransitionService(manifestStore)
 			specificationService := workflow.NewSpecificationService(
@@ -112,14 +129,34 @@ func NewCommand() *cobra.Command {
 				resultDecoder,
 				checks.NewExecutor(processRunner),
 				gitrepo.NewDiffInspector("git", processRunner),
+				gitrepo.NewWorktreeInspector("git", processRunner),
 				installed.Schemas[assets.SchemaAgentResult].Path,
 				configuration.Agent.Timeout,
 				configuration.Checks,
 				configuration.ProtectedPaths,
 			)
+			reviewService := workflow.NewReviewService(
+				manifestStore,
+				transitionService,
+				reviewPrompt,
+				fixReviewPrompt,
+				reviewRunner,
+				reviewDecoder,
+				resultDecoder,
+				checks.NewExecutor(processRunner),
+				gitrepo.NewDiffInspector("git", processRunner),
+				gitrepo.NewWorktreeInspector("git", processRunner),
+				manifestStore,
+				installed.Schemas[assets.SchemaReviewResult].Path,
+				installed.Schemas[assets.SchemaAgentResult].Path,
+				configuration.Agent.Timeout,
+				configuration.Checks,
+				configuration.ProtectedPaths,
+				configuration.Review.MaxAttempts,
+			)
 			runService := workflow.NewRunService(
 				state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
-				state.NewWorkflowID, reportingSpecification, implementationService,
+				state.NewWorkflowID, reportingSpecification, implementationService, reviewService,
 			)
 			return runService.RunGitHub(ctx, controllerRoot, issueNumber)
 		},

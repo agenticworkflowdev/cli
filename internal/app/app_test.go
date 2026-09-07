@@ -146,13 +146,21 @@ esac
 	codexScript := `#!/bin/sh
 output=
 previous=
+sandbox=
 for argument in "$@"; do
   if [ "$previous" = "--output-last-message" ]; then output="$argument"; fi
+  if [ "$previous" = "--sandbox" ]; then sandbox="$argument"; fi
   previous="$argument"
 done
-mkdir -p "$PWD/.awdev/specs"
-printf '%s\n' '# Generated specification' > "$PWD/.awdev/specs/gh-17-a-title.md"
-printf '%s' '{"status":"completed","summary":"Specification written","question":""}' > "$output"
+if [ "$sandbox" = "read-only" ]; then
+  printf '%s' '{"approved":true,"findings":[]}' > "$output"
+else
+  if [ ! -f "$PWD/.awdev/specs/gh-17-a-title.md" ]; then
+    mkdir -p "$PWD/.awdev/specs"
+    printf '%s\n' '# Generated specification' > "$PWD/.awdev/specs/gh-17-a-title.md"
+  fi
+  printf '%s' '{"status":"completed","summary":"Work completed","question":""}' > "$output"
+fi
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(codexPath, []byte(codexScript), 0o755); err != nil {
@@ -182,12 +190,19 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 		t.Fatal("saved manifest was not found by issue identity")
 	}
 	manifest := *existing.Manifest
-	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseImplementation || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
+	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseReview || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" || manifest.Review == nil || manifest.Review.Attempt != 1 {
 		t.Fatalf("saved manifest = %#v", manifest)
 	}
-	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
+	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
 	if got := output.String(); got != wantOutput {
 		t.Fatalf("output = %q, want %q", got, wantOutput)
+	}
+	reviewEvidence, err := state.NewStore().ReadReview(repository, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("read persisted review evidence: %v", err)
+	}
+	if !reviewEvidence.Approved || len(reviewEvidence.Findings) != 0 {
+		t.Fatalf("review evidence = %#v", reviewEvidence)
 	}
 	specificationContents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(manifest.SpecificationPath)))
 	if err != nil {

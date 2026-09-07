@@ -24,6 +24,7 @@ type ImplementationResult struct {
 	SessionIDs   []string
 	Progress     []agent.ProgressEvent
 	CheckResults []checks.Result
+	CheckedState gitrepo.WorktreeBaseline
 	Blocker      *BlockerRequest
 }
 
@@ -86,6 +87,7 @@ type ImplementationService struct {
 	decoder         SpecificationResultDecoder
 	checks          checks.Runner
 	diff            gitrepo.DiffScopeInspector
+	worktree        gitrepo.WorktreeStateInspector
 	schemaPath      string
 	timeout         time.Duration
 	definitions     []checks.Definition
@@ -102,6 +104,7 @@ func NewImplementationService(
 	decoder SpecificationResultDecoder,
 	checkRunner checks.Runner,
 	diff gitrepo.DiffScopeInspector,
+	worktree gitrepo.WorktreeStateInspector,
 	schemaPath string,
 	timeout time.Duration,
 	definitions []checks.Definition,
@@ -109,7 +112,7 @@ func NewImplementationService(
 ) *ImplementationService {
 	return &ImplementationService{
 		reader: reader, transition: transition, implementPrompt: implementPrompt, repairPrompt: repairPrompt,
-		runner: runner, decoder: decoder, checks: checkRunner, diff: diff, schemaPath: schemaPath, timeout: timeout,
+		runner: runner, decoder: decoder, checks: checkRunner, diff: diff, worktree: worktree, schemaPath: schemaPath, timeout: timeout,
 		definitions: append([]checks.Definition(nil), definitions...), protectedPaths: append([]string(nil), protectedPaths...),
 	}
 }
@@ -118,7 +121,7 @@ func NewImplementationService(
 // write access. Passing evidence is returned only for the current post-agent
 // diff; every repair reruns the complete check set.
 func (service *ImplementationService) Implement(ctx context.Context, controllerRoot, workflowID string) (ImplementationResult, error) {
-	if service == nil || service.reader == nil || service.transition == nil || service.implementPrompt == nil || service.repairPrompt == nil || service.runner == nil || service.decoder == nil || service.checks == nil || service.diff == nil {
+	if service == nil || service.reader == nil || service.transition == nil || service.implementPrompt == nil || service.repairPrompt == nil || service.runner == nil || service.decoder == nil || service.checks == nil || service.diff == nil || service.worktree == nil {
 		return ImplementationResult{}, errors.New("implementation service is not fully configured")
 	}
 	if service.timeout <= 0 {
@@ -171,13 +174,25 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 	}
 
 	for repairAttempt := 0; ; repairAttempt++ {
+		checkedState, captureErr := service.worktree.Capture(ctx, absoluteWorktree)
+		if captureErr != nil {
+			return service.fail(controllerRoot, running, result, fmt.Errorf("capture pre-check worktree state: %w", captureErr))
+		}
 		checkResults, checkErr := service.checks.Run(ctx, absoluteWorktree, service.definitions)
 		result.CheckResults = cloneCheckResults(checkResults)
 		if checkErr != nil {
 			return service.fail(controllerRoot, running, result, fmt.Errorf("run deterministic checks: %w", checkErr))
 		}
+		changed, inspectErr := service.worktree.Inspect(ctx, absoluteWorktree, checkedState)
+		if inspectErr != nil {
+			return service.fail(controllerRoot, running, result, fmt.Errorf("verify post-check worktree state: %w", inspectErr))
+		}
+		if len(changed) > 0 {
+			return service.fail(controllerRoot, running, result, fmt.Errorf("deterministic checks changed worktree paths: %s", strings.Join(changed, ", ")))
+		}
 		failed := failedCheckResults(checkResults)
 		if len(failed) == 0 {
+			result.CheckedState = checkedState
 			return result, nil
 		}
 		if repairAttempt == maxCheckFixInvocations {

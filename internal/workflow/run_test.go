@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agenticworkflowdev/cli/internal/checks"
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
 	"github.com/agenticworkflowdev/cli/internal/gitrepo"
 	"github.com/agenticworkflowdev/cli/internal/state"
@@ -30,7 +31,8 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	writer := &fakeManifestWriter{events: &events}
 	specification := &fakeSpecificationCreator{events: &events, writer: writer}
 	implementation := &fakeImplementationRunner{events: &events, writer: writer}
-	service := workflow.NewRunService(locker, existing, fetcher, next, writer, generateFixedWorkflowID, specification, implementation)
+	reviewer := &fakeReviewer{events: &events, writer: writer}
+	service := workflow.NewRunService(locker, existing, fetcher, next, writer, generateFixedWorkflowID, specification, implementation, reviewer)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
@@ -42,10 +44,10 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	if result.Worktree != next.result {
 		t.Fatalf("result worktree = %#v, want %#v", result.Worktree, next.result)
 	}
-	if result.Manifest == nil || result.Manifest.Issue.Body != validSnapshot().Issue.Body || result.Manifest.Phase != state.PhaseImplementation || result.Manifest.Status != state.StatusRunning || result.Manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
-		t.Fatalf("completed implementation manifest = %#v", result.Manifest)
+	if result.Manifest == nil || result.Manifest.Issue.Body != validSnapshot().Issue.Body || result.Manifest.Phase != state.PhaseReview || result.Manifest.Status != state.StatusRunning || result.Manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" {
+		t.Fatalf("completed review manifest = %#v", result.Manifest)
 	}
-	want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "specification", "implementation", "unlock"}
+	want := []string{"state:17", "lock:gh-17", "state:17", "github:17", "continue", "manifest:" + fixedWorkflowID, "specification", "implementation", "review", "unlock"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -54,6 +56,9 @@ func TestRunGitHubOrdersLockStateFetchValidationAndContinuation(t *testing.T) {
 	}
 	if result.Implementation == nil || result.Implementation.Manifest.Phase != state.PhaseImplementation {
 		t.Fatalf("implementation result = %#v", result.Implementation)
+	}
+	if result.Review == nil || result.Review.Manifest.Phase != state.PhaseReview {
+		t.Fatalf("review result = %#v", result.Review)
 	}
 }
 
@@ -70,6 +75,7 @@ func TestRunGitHubDoesNotImplementABlockedSpecification(t *testing.T) {
 		generateFixedWorkflowID,
 		&fakeSpecificationCreator{events: &events, writer: writer, blocker: &workflow.BlockerRequest{Phase: state.PhaseSpec, Question: "Which API?"}},
 		implementation,
+		&fakeReviewer{events: &events, writer: writer},
 	)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
@@ -78,6 +84,30 @@ func TestRunGitHubDoesNotImplementABlockedSpecification(t *testing.T) {
 	}
 	if result.Specification == nil || result.Specification.Blocker == nil || implementation.called {
 		t.Fatalf("result = %#v, implementation called = %v", result, implementation.called)
+	}
+}
+
+func TestRunGitHubDoesNotReviewABlockedImplementation(t *testing.T) {
+	events := []string{}
+	writer := &fakeManifestWriter{events: &events}
+	implementation := &fakeImplementationRunner{
+		events: &events, writer: writer,
+		blocker: &workflow.BlockerRequest{Phase: state.PhaseImplementation, Question: "Which API?"},
+	}
+	reviewer := &fakeReviewer{events: &events, writer: writer}
+	service := workflow.NewRunService(
+		fakeLocker{events: &events, lock: &fakeLock{events: &events}}, fakeExisting{events: &events},
+		fakeFetcher{events: &events, snapshot: validSnapshot()},
+		&fakeBootstrapper{events: &events, result: gitrepo.Worktree{Branch: "gh-17-a-title", BaseSHA: strings.Repeat("a", 40), AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title"}},
+		writer, generateFixedWorkflowID, &fakeSpecificationCreator{events: &events, writer: writer}, implementation, reviewer,
+	)
+
+	result, err := service.RunGitHub(context.Background(), "/repo", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Implementation == nil || result.Implementation.Blocker == nil || reviewer.called || result.Review != nil {
+		t.Fatalf("result = %#v, reviewer called = %t", result, reviewer.called)
 	}
 }
 
@@ -93,6 +123,7 @@ func TestRunGitHubReturnsFailedImplementationEvidenceForDiagnostics(t *testing.T
 		fakeFetcher{events: &events, snapshot: validSnapshot()},
 		&fakeBootstrapper{events: &events, result: gitrepo.Worktree{Branch: "gh-17-a-title", BaseSHA: strings.Repeat("a", 40), AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title"}},
 		writer, generateFixedWorkflowID, &fakeSpecificationCreator{events: &events, writer: writer}, implementation,
+		&fakeReviewer{events: &events, writer: writer},
 	)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
@@ -129,6 +160,7 @@ func TestRunGitHubRejectsInvalidSnapshotBeforeContinuation(t *testing.T) {
 				generateFixedWorkflowID,
 				&fakeSpecificationCreator{events: &events},
 				&fakeImplementationRunner{events: &events},
+				&fakeReviewer{events: &events},
 			)
 			_, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err == nil || !strings.Contains(err.Error(), test.wantText) {
@@ -159,6 +191,7 @@ func TestRunGitHubExistingManifestShortCircuitsFetchAndContinuation(t *testing.T
 				generateFixedWorkflowID,
 				&fakeSpecificationCreator{events: &events},
 				&fakeImplementationRunner{events: &events},
+				&fakeReviewer{events: &events},
 			)
 			result, err := service.RunGitHub(context.Background(), "/repo", 17)
 			if err != nil {
@@ -193,6 +226,7 @@ func TestRunGitHubRechecksManifestAfterAcquiringLock(t *testing.T) {
 		generateFixedWorkflowID,
 		&fakeSpecificationCreator{events: &events},
 		&fakeImplementationRunner{events: &events},
+		&fakeReviewer{events: &events},
 	)
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err != nil {
@@ -218,6 +252,7 @@ func TestRunGitHubRequiresWorktreeBootstrapperForNewWorkflow(t *testing.T) {
 		generateFixedWorkflowID,
 		nil,
 		nil,
+		nil,
 	)
 	_, err := service.RunGitHub(context.Background(), "/repo", 17)
 	if err == nil || !strings.Contains(err.Error(), "not fully configured") {
@@ -241,6 +276,7 @@ func TestRunGitHubPersistsOnlyAfterValidatedWorktreeAndReportsPersistenceFailure
 			generateFixedWorkflowID,
 			&fakeSpecificationCreator{events: &events},
 			&fakeImplementationRunner{events: &events},
+			&fakeReviewer{events: &events},
 		)
 		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil {
 			t.Fatal("worktree failure was ignored")
@@ -264,6 +300,7 @@ func TestRunGitHubPersistsOnlyAfterValidatedWorktreeAndReportsPersistenceFailure
 			generateFixedWorkflowID,
 			&fakeSpecificationCreator{events: &events},
 			&fakeImplementationRunner{events: &events},
+			&fakeReviewer{events: &events},
 		)
 		if _, err := service.RunGitHub(context.Background(), "/repo", 17); err == nil || !strings.Contains(err.Error(), "persist initial workflow manifest") {
 			t.Fatalf("error = %v, want persistence failure", err)
@@ -369,10 +406,20 @@ type fakeSpecificationCreator struct {
 }
 
 type fakeImplementationRunner struct {
+	events  *[]string
+	writer  *fakeManifestWriter
+	called  bool
+	result  workflow.ImplementationResult
+	err     error
+	blocker *workflow.BlockerRequest
+	checks  []checks.Result
+}
+
+type fakeReviewer struct {
 	events *[]string
 	writer *fakeManifestWriter
 	called bool
-	result workflow.ImplementationResult
+	result workflow.ReviewResult
 	err    error
 }
 
@@ -389,7 +436,24 @@ func (runner *fakeImplementationRunner) Implement(_ context.Context, _ string, w
 	manifest.Phase = state.PhaseImplementation
 	manifest.Status = state.StatusRunning
 	manifest.SpecificationPath = ".awdev/specs/" + manifest.Branch + ".md"
-	return workflow.ImplementationResult{Manifest: manifest}, nil
+	return workflow.ImplementationResult{Manifest: manifest, CheckResults: cloneResultsForReviewTest(runner.checks), Blocker: runner.blocker}, nil
+}
+
+func (reviewer *fakeReviewer) Review(_ context.Context, _ string, workflowID string, _ []checks.Result, _ gitrepo.WorktreeBaseline) (workflow.ReviewResult, error) {
+	reviewer.called = true
+	*reviewer.events = append(*reviewer.events, "review")
+	if reviewer.err != nil || reviewer.result.Manifest.WorkflowID != "" {
+		return reviewer.result, reviewer.err
+	}
+	manifest := state.Manifest{WorkflowID: workflowID}
+	if reviewer.writer != nil {
+		manifest = reviewer.writer.manifest
+	}
+	manifest.Phase = state.PhaseReview
+	manifest.Status = state.StatusRunning
+	manifest.SpecificationPath = ".awdev/specs/" + manifest.Branch + ".md"
+	manifest.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
+	return workflow.ReviewResult{Manifest: manifest}, nil
 }
 
 func (creator *fakeSpecificationCreator) Create(_ context.Context, _ string, workflowID string) (workflow.SpecificationResult, error) {

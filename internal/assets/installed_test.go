@@ -11,6 +11,7 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/assets"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	"github.com/agenticworkflowdev/cli/internal/review"
 )
 
 func TestDefaultAgentResultSchemaUsesCodexSupportedRootObject(t *testing.T) {
@@ -51,6 +52,41 @@ func TestDefaultAgentResultSchemaUsesCodexSupportedRootObject(t *testing.T) {
 		if _, err := decoder.Decode([]byte(result)); err != nil {
 			t.Errorf("decode %s: %v", result, err)
 		}
+	}
+}
+
+func TestDefaultReviewResultSchemaRequiresEveryFindingPropertyForCodex(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "schemas/review-result.schema.json")
+	if err != nil {
+		t.Fatalf("read default review result schema: %v", err)
+	}
+
+	var schema struct {
+		Properties struct {
+			Findings struct {
+				Items struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+					Required   []string                   `json:"required"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(contents, &schema); err != nil {
+		t.Fatalf("decode default review result schema: %v", err)
+	}
+	for property := range schema.Properties.Findings.Items.Properties {
+		if !slices.Contains(schema.Properties.Findings.Items.Required, property) {
+			t.Errorf("finding property %q is not required", property)
+		}
+	}
+
+	decoder, err := review.NewResultDecoder(contents)
+	if err != nil {
+		t.Fatalf("compile default review result schema: %v", err)
+	}
+	result := []byte(`{"approved":false,"findings":[{"severity":"medium","path":null,"line":null,"message":"Explain the failure."}]}`)
+	if _, err := decoder.Decode(result); err != nil {
+		t.Errorf("decode finding without a source location: %v", err)
 	}
 }
 

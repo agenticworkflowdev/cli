@@ -7,6 +7,7 @@ import (
 	"text/template"
 
 	"github.com/agenticworkflowdev/cli/internal/checks"
+	"github.com/agenticworkflowdev/cli/internal/review"
 )
 
 // IssueData is the persisted issue snapshot exposed to prompt templates.
@@ -26,6 +27,7 @@ type PromptData struct {
 	SpecificationPath string
 	Issue             IssueData
 	CheckResults      []checks.Result
+	ReviewFindings    []review.Finding
 }
 
 // Renderer is one prompt compiled exactly once with strict missing-key
