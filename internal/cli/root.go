@@ -51,7 +51,7 @@ type Services struct {
 	WorkingDirectory       func() (string, error)
 	DiscoverRoot           func(context.Context, string) (string, error)
 	ValidateExistingConfig func(string) error
-	Initialize             func(string, agent.Provider) (initrepo.Result, error)
+	Initialize             func(string, agent.Provider, initrepo.Options) (initrepo.Result, error)
 	ValidateConfig         func(string) error
 	RunGitHub              func(context.Context, string, int, ProgressReporter) (workflow.RunResult, error)
 	ResumeGitHub           func(context.Context, string, int, ProgressReporter) (workflow.ResumeResult, error)

@@ -31,6 +31,17 @@ Initialization adds missing defaults under `.awdev/` and adds the controller
 state and worktree entries to `.gitignore`. Existing configuration, prompts,
 schemas, and unrelated ignore entries are retained.
 
+To also install the explicit-only repository `$awdev` skill, opt in during
+initialization:
+
+```sh
+awdev init --with-skill
+```
+
+The flag additively installs `.agents/skills/awdev/SKILL.md` and its Codex
+metadata. Repeating it fills in missing files without changing existing ones;
+plain `awdev init` does not install or require the skill.
+
 Run an issue and inspect its stable machine-readable status:
 
 ```sh

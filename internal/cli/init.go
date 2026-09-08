@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
@@ -10,7 +11,8 @@ import (
 )
 
 func newInitCommand(services Services) *cobra.Command {
-	return &cobra.Command{
+	var withSkill bool
+	command := &cobra.Command{
 		Use:   "init",
 		Short: "Select an agent and initialize the current repository",
 		Args:  cobra.NoArgs,
@@ -36,7 +38,7 @@ func newInitCommand(services Services) *cobra.Command {
 			if services.Initialize == nil {
 				return errors.New("repository initialization is unavailable")
 			}
-			result, err := services.Initialize(root, provider)
+			result, err := services.Initialize(root, provider, initrepo.Options{WithSkill: withSkill})
 			if err != nil {
 				return fmt.Errorf("initialize repository: %w", err)
 			}
@@ -48,6 +50,8 @@ func newInitCommand(services Services) *cobra.Command {
 			return writeInitializationResult(command, result, provider)
 		},
 	}
+	command.Flags().BoolVar(&withSkill, "with-skill", false, "install the explicit-only repository Codex skill")
+	return command
 }
 
 func writeInitializationResult(command *cobra.Command, result initrepo.Result, provider agent.Provider) error {
@@ -76,7 +80,28 @@ func writeInitializationResult(command *cobra.Command, result initrepo.Result, p
 	default:
 		return fmt.Errorf("unknown .gitignore initialization status %q", result.Gitignore)
 	}
+	if result.Skill != nil {
+		if err := writeSkillFileResult(writer, ".agents/skills/awdev/SKILL.md", result.Skill.Instructions); err != nil {
+			return err
+		}
+		if err := writeSkillFileResult(writer, ".agents/skills/awdev/agents/openai.yaml", result.Skill.Metadata); err != nil {
+			return err
+		}
+	}
 
 	_, err := fmt.Fprintf(writer, "Initialization complete. AWDev is configured to use %s.\n", provider.DisplayName())
 	return err
+}
+
+func writeSkillFileResult(writer io.Writer, path string, status initrepo.FileStatus) error {
+	switch status {
+	case initrepo.FileCreated:
+		_, err := fmt.Fprintf(writer, "Created %s.\n", path)
+		return err
+	case initrepo.FileRetained:
+		_, err := fmt.Fprintf(writer, "%s already exists; retained unchanged.\n", path)
+		return err
+	default:
+		return fmt.Errorf("unknown skill file initialization status %q", status)
+	}
 }

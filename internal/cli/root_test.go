@@ -61,7 +61,7 @@ func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 			services := cli.Services{
 				WorkingDirectory: func() (string, error) { servicesCalled = true; return "/repo", nil },
 				DiscoverRoot:     func(context.Context, string) (string, error) { servicesCalled = true; return "/repo", nil },
-				Initialize: func(_ string, provider agent.Provider) (initrepo.Result, error) {
+				Initialize: func(_ string, provider agent.Provider, _ initrepo.Options) (initrepo.Result, error) {
 					servicesCalled = true
 					initializedProvider = provider
 					return initrepo.Result{AwdevDirectoryCreated: true, Gitignore: initrepo.GitignoreCreated}, nil
@@ -156,7 +156,7 @@ func TestInitCommandPrintsConciseSummary(t *testing.T) {
 			services := cli.Services{
 				WorkingDirectory: func() (string, error) { return "/repo", nil },
 				DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
-				Initialize:       func(string, agent.Provider) (initrepo.Result, error) { return test.result, nil },
+				Initialize:       func(string, agent.Provider, initrepo.Options) (initrepo.Result, error) { return test.result, nil },
 				ValidateConfig:   func(string) error { return nil },
 			}
 			var output bytes.Buffer
@@ -185,6 +185,92 @@ func TestInitCommandPrintsConciseSummary(t *testing.T) {
 	}
 }
 
+func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+
+	tests := []struct {
+		name         string
+		instructions initrepo.FileStatus
+		metadata     initrepo.FileStatus
+		want         []string
+	}{
+		{
+			name:         "both created",
+			instructions: initrepo.FileCreated,
+			metadata:     initrepo.FileCreated,
+			want: []string{
+				"Created .agents/skills/awdev/SKILL.md.",
+				"Created .agents/skills/awdev/agents/openai.yaml.",
+			},
+		},
+		{
+			name:         "both retained",
+			instructions: initrepo.FileRetained,
+			metadata:     initrepo.FileRetained,
+			want: []string{
+				".agents/skills/awdev/SKILL.md already exists; retained unchanged.",
+				".agents/skills/awdev/agents/openai.yaml already exists; retained unchanged.",
+			},
+		},
+		{
+			name:         "instructions retained",
+			instructions: initrepo.FileRetained,
+			metadata:     initrepo.FileCreated,
+			want: []string{
+				".agents/skills/awdev/SKILL.md already exists; retained unchanged.",
+				"Created .agents/skills/awdev/agents/openai.yaml.",
+			},
+		},
+		{
+			name:         "metadata retained",
+			instructions: initrepo.FileCreated,
+			metadata:     initrepo.FileRetained,
+			want: []string{
+				"Created .agents/skills/awdev/SKILL.md.",
+				".agents/skills/awdev/agents/openai.yaml already exists; retained unchanged.",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var options initrepo.Options
+			services := cli.Services{
+				WorkingDirectory: func() (string, error) { return "/repo", nil },
+				DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+				Initialize: func(_ string, _ agent.Provider, got initrepo.Options) (initrepo.Result, error) {
+					options = got
+					return initrepo.Result{
+						Gitignore: initrepo.GitignoreRetained,
+						Skill: &initrepo.SkillResult{
+							Instructions: test.instructions,
+							Metadata:     test.metadata,
+						},
+					}, nil
+				},
+				ValidateConfig: func(string) error { return nil },
+			}
+			var output bytes.Buffer
+			command := cli.NewRootCommand(services)
+			command.SetIn(strings.NewReader("2\n"))
+			command.SetOut(&output)
+			command.SetArgs([]string{"init", "--with-skill"})
+
+			if err := command.Execute(); err != nil {
+				t.Fatalf("execute init: %v", err)
+			}
+			if !options.WithSkill {
+				t.Fatal("initialize options did not enable skill installation")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("init output %q does not contain %q", output.String(), want)
+				}
+			}
+		})
+	}
+}
+
 func TestInitCommandValidatesExistingConfigBeforeInitialization(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 
@@ -193,7 +279,7 @@ func TestInitCommandValidatesExistingConfigBeforeInitialization(t *testing.T) {
 		WorkingDirectory:       func() (string, error) { return "/repo", nil },
 		DiscoverRoot:           func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateExistingConfig: func(string) error { return errors.New("invalid existing config") },
-		Initialize: func(string, agent.Provider) (initrepo.Result, error) {
+		Initialize: func(string, agent.Provider, initrepo.Options) (initrepo.Result, error) {
 			initialized = true
 			return initrepo.Result{}, nil
 		},

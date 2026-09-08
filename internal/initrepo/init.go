@@ -30,6 +30,32 @@ var ignoreEntries = []string{
 	".awdev/worktrees/",
 }
 
+var skillDirectories = []string{
+	".agents",
+	".agents/skills",
+	".agents/skills/awdev",
+	".agents/skills/awdev/agents",
+}
+
+// Options controls optional repository integrations installed by Initialize.
+type Options struct {
+	WithSkill bool
+}
+
+// FileStatus describes how initialization handled an optional file.
+type FileStatus string
+
+const (
+	FileCreated  FileStatus = "created"
+	FileRetained FileStatus = "retained"
+)
+
+// SkillResult contains the outcomes for the optional repository Codex skill.
+type SkillResult struct {
+	Instructions FileStatus
+	Metadata     FileStatus
+}
+
 // GitignoreStatus describes how initialization handled .gitignore.
 type GitignoreStatus string
 
@@ -43,11 +69,12 @@ const (
 type Result struct {
 	AwdevDirectoryCreated bool
 	Gitignore             GitignoreStatus
+	Skill                 *SkillResult
 }
 
 // Initialize installs missing defaults beneath controllerRoot without replacing
 // or rewriting any existing repository-owned asset.
-func Initialize(controllerRoot string, provider agent.Provider) (Result, error) {
+func Initialize(controllerRoot string, provider agent.Provider, options Options) (Result, error) {
 	if provider != agent.ProviderCodex {
 		return Result{}, fmt.Errorf("unsupported agent %q", provider)
 	}
@@ -83,6 +110,13 @@ func Initialize(controllerRoot string, provider agent.Provider) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
+	if options.WithSkill {
+		skill, err := installSkill(controllerRoot)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Skill = &skill
+	}
 
 	result.Gitignore, err = updateIgnoreFile(filepath.Join(controllerRoot, ".gitignore"))
 	if err != nil {
@@ -90,6 +124,39 @@ func Initialize(controllerRoot string, provider agent.Provider) (Result, error) 
 	}
 
 	return result, nil
+}
+
+func installSkill(controllerRoot string) (SkillResult, error) {
+	for _, relative := range skillDirectories {
+		if _, err := ensureDirectory(filepath.Join(controllerRoot, filepath.FromSlash(relative))); err != nil {
+			return SkillResult{}, fmt.Errorf("prepare %s: %w", relative, err)
+		}
+	}
+
+	install := func(source, destination string) (FileStatus, error) {
+		contents, err := fs.ReadFile(assets.RepositorySkill(), source)
+		if err != nil {
+			return FileRetained, err
+		}
+		created, err := createFileIfMissing(filepath.Join(controllerRoot, filepath.FromSlash(destination)), contents)
+		if err != nil {
+			return FileRetained, err
+		}
+		if created {
+			return FileCreated, nil
+		}
+		return FileRetained, nil
+	}
+
+	instructions, err := install("SKILL.md", ".agents/skills/awdev/SKILL.md")
+	if err != nil {
+		return SkillResult{}, fmt.Errorf("install .agents/skills/awdev/SKILL.md: %w", err)
+	}
+	metadata, err := install("agents/openai.yaml", ".agents/skills/awdev/agents/openai.yaml")
+	if err != nil {
+		return SkillResult{}, fmt.Errorf("install .agents/skills/awdev/agents/openai.yaml: %w", err)
+	}
+	return SkillResult{Instructions: instructions, Metadata: metadata}, nil
 }
 
 func ensureDirectory(path string) (bool, error) {

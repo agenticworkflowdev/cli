@@ -92,7 +92,7 @@ func TestDefaultReviewResultSchemaRequiresEveryFindingPropertyForCodex(t *testin
 
 func TestLoadInstalledUsesControllerRootAndRepositoryOwnedBytes(t *testing.T) {
 	root := t.TempDir()
-	if _, err := initrepo.Initialize(root, agent.ProviderCodex); err != nil {
+	if _, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{}); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
 	wantPrompt := []byte("repository-owned spec prompt\n")

@@ -32,10 +32,19 @@ var expectedLayout = []string{
 	".gitignore",
 }
 
+var expectedSkillLayout = []string{
+	".agents",
+	".agents/skills",
+	".agents/skills/awdev",
+	".agents/skills/awdev/SKILL.md",
+	".agents/skills/awdev/agents",
+	".agents/skills/awdev/agents/openai.yaml",
+}
+
 func TestInitializeCreatesCompleteLayoutAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 
-	first, err := initrepo.Initialize(root, agent.ProviderCodex)
+	first, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{})
 	if err != nil {
 		t.Fatalf("first initialize: %v", err)
 	}
@@ -51,7 +60,7 @@ func TestInitializeCreatesCompleteLayoutAndIsIdempotent(t *testing.T) {
 	}
 
 	before := snapshotFiles(t, root)
-	second, err := initrepo.Initialize(root, agent.ProviderCodex)
+	second, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{})
 	if err != nil {
 		t.Fatalf("second initialize: %v", err)
 	}
@@ -80,12 +89,131 @@ func TestInitializePreservesExistingAssetsByteForByte(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, err := initrepo.Initialize(root, agent.ProviderCodex)
+	_, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{})
 	if err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
 	assertFileBytes(t, promptPath, wantPrompt)
 	assertFileBytes(t, configPath, wantConfig)
+}
+
+func TestInitializeWithSkillCreatesOptionalFilesAndIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+
+	first, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{WithSkill: true})
+	if err != nil {
+		t.Fatalf("first initialize: %v", err)
+	}
+	if first.Skill == nil || first.Skill.Instructions != initrepo.FileCreated || first.Skill.Metadata != initrepo.FileCreated {
+		t.Fatalf("first skill result = %#v, want both files created", first.Skill)
+	}
+	for _, path := range expectedSkillLayout {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+			t.Errorf("stat %s: %v", path, err)
+		}
+	}
+	before := snapshotFiles(t, root)
+
+	second, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{WithSkill: true})
+	if err != nil {
+		t.Fatalf("second initialize: %v", err)
+	}
+	if second.Skill == nil || second.Skill.Instructions != initrepo.FileRetained || second.Skill.Metadata != initrepo.FileRetained {
+		t.Fatalf("second skill result = %#v, want both files retained", second.Skill)
+	}
+	if after := snapshotFiles(t, root); !reflect.DeepEqual(after, before) {
+		t.Fatal("second opt-in initialization changed file bytes")
+	}
+}
+
+func TestInitializeWithSkillAddsOnlyMissingFilesAndPreservesExistingBytes(t *testing.T) {
+	tests := []struct {
+		name         string
+		existingPath string
+		missingPath  string
+		instructions initrepo.FileStatus
+		metadata     initrepo.FileStatus
+	}{
+		{
+			name:         "edited instructions",
+			existingPath: ".agents/skills/awdev/SKILL.md",
+			missingPath:  ".agents/skills/awdev/agents/openai.yaml",
+			instructions: initrepo.FileRetained,
+			metadata:     initrepo.FileCreated,
+		},
+		{
+			name:         "edited metadata",
+			existingPath: ".agents/skills/awdev/agents/openai.yaml",
+			missingPath:  ".agents/skills/awdev/SKILL.md",
+			instructions: initrepo.FileCreated,
+			metadata:     initrepo.FileRetained,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			existingPath := filepath.Join(root, filepath.FromSlash(test.existingPath))
+			if err := os.MkdirAll(filepath.Dir(existingPath), 0o755); err != nil {
+				t.Fatalf("create existing file directory: %v", err)
+			}
+			wantExisting := []byte("locally edited\x00without newline")
+			if err := os.WriteFile(existingPath, wantExisting, 0o600); err != nil {
+				t.Fatalf("write existing file: %v", err)
+			}
+
+			result, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{WithSkill: true})
+			if err != nil {
+				t.Fatalf("initialize: %v", err)
+			}
+			if result.Skill == nil || result.Skill.Instructions != test.instructions || result.Skill.Metadata != test.metadata {
+				t.Fatalf("skill result = %#v, want instructions %q and metadata %q", result.Skill, test.instructions, test.metadata)
+			}
+			assertFileBytes(t, existingPath, wantExisting)
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(test.missingPath))); err != nil {
+				t.Fatalf("stat installed missing file: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstalledSkillIsAnExplicitOnlyCLIDispatcher(t *testing.T) {
+	root := t.TempDir()
+	if _, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{WithSkill: true}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	instructions, err := os.ReadFile(filepath.Join(root, ".agents", "skills", "awdev", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read instructions: %v", err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(root, ".agents", "skills", "awdev", "agents", "openai.yaml"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	for _, command := range []string{"awdev run github NUMBER", "awdev status github NUMBER", "awdev resume github NUMBER"} {
+		if !strings.Contains(string(instructions), command) {
+			t.Errorf("instructions do not contain %q", command)
+		}
+	}
+	for _, legacy := range []string{"awdev run NUMBER", "awdev status NUMBER", "awdev resume NUMBER", "awdev retry"} {
+		if strings.Contains(string(instructions), legacy) {
+			t.Errorf("instructions contain unsupported command %q", legacy)
+		}
+	}
+	for _, claim := range []string{"daemon", "MCP", "Linear", "Claude Code"} {
+		if strings.Contains(string(instructions), claim) {
+			t.Errorf("instructions contain out-of-scope claim %q", claim)
+		}
+	}
+	wantMetadata := "interface:\n" +
+		"  display_name: \"AWDev\"\n" +
+		"  short_description: \"Dispatch an AWDev GitHub issue workflow\"\n" +
+		"  default_prompt: \"Use $awdev to dispatch an AWDev GitHub issue workflow.\"\n" +
+		"policy:\n" +
+		"  allow_implicit_invocation: false\n"
+	if string(metadata) != wantMetadata {
+		t.Fatalf("metadata = %q, want approved explicit-only fixture %q", metadata, wantMetadata)
+	}
 }
 
 func TestInitializeAppendsOnlyMissingIgnoreEntries(t *testing.T) {
@@ -110,7 +238,7 @@ func TestInitializeAppendsOnlyMissingIgnoreEntries(t *testing.T) {
 				}
 			}
 
-			result, err := initrepo.Initialize(root, agent.ProviderCodex)
+			result, err := initrepo.Initialize(root, agent.ProviderCodex, initrepo.Options{})
 			if err != nil {
 				t.Fatalf("initialize: %v", err)
 			}

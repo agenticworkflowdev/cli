@@ -116,7 +116,7 @@ func TestRunGitHubCreatesValidatedWorktreeThenSavesManifest(t *testing.T) {
 	runGitIn(t, repository, "remote", "add", "origin", remoteURL)
 	runGitIn(t, repository, "config", "url.file://"+filepath.ToSlash(bare)+"/.insteadOf", remoteURL)
 	runGitIn(t, repository, "push", "--quiet", "-u", "origin", "main")
-	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
+	if _, err := initrepo.Initialize(repository, agent.ProviderCodex, initrepo.Options{}); err != nil {
 		t.Fatalf("initialize repository: %v", err)
 	}
 	configPath := filepath.Join(repository, ".awdev", "config.json")
@@ -241,7 +241,7 @@ func TestRunGitHubReportsExistingManifestWithoutGitHub(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
-	if _, err := initrepo.Initialize(repository, agent.ProviderCodex); err != nil {
+	if _, err := initrepo.Initialize(repository, agent.ProviderCodex, initrepo.Options{}); err != nil {
 		t.Fatalf("initialize repository: %v", err)
 	}
 	manifest := state.Manifest{
