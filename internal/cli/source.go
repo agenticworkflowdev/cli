@@ -272,27 +272,8 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 	if result.Manifest == nil {
 		return errors.New("completed GitHub run result is missing its manifest")
 	}
-	if _, err := fmt.Fprintf(
-		command.OutOrStdout(),
-		"GitHub issue: #%d\nWorktree: %s\nBranch: %s\n",
-		result.Snapshot.Issue.Number,
-		result.Manifest.Worktree,
-		result.Worktree.Branch,
-	); err != nil {
-		return err
-	}
-	if result.Manifest.SpecificationPath != "" {
-		if _, err := fmt.Fprintf(command.OutOrStdout(), "Specification: %s\n", result.Manifest.SpecificationPath); err != nil {
-			return err
-		}
-	}
-	if reviewPassed(result.Review) {
-		if _, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed"); err != nil {
-			return err
-		}
-	}
 	if result.Manifest.PullRequest != nil {
-		if _, err := fmt.Fprintf(command.OutOrStdout(), "Pull request: %s\n", result.Manifest.PullRequest.URL); err != nil {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "✓ Pull request created: %s\n", result.Manifest.PullRequest.URL); err != nil {
 			return err
 		}
 	}

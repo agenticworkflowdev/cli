@@ -3,13 +3,8 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"path"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -152,35 +147,38 @@ func newWorkflowRuntime(
 	if err != nil {
 		return workflowRuntime{}, err
 	}
-	specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval}
-	implementationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "Implementing the specification. This can take a few moments..."}
-	reviewRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "Reviewing the implementation. This can take a few moments..."}
+	specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Specification agent\n  └─ writing specification..."}
+	implementationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Implementation agent\n  └─ implementing changes..."}
+	reviewRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Review agent"}
 	transitionService := state.NewTransitionService(manifestStore)
 	specificationService := workflow.NewSpecificationService(
 		manifestStore, transitionService, specificationPrompt, specificationRunner, resultDecoder,
 		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, resumePrompt,
 	)
-	reportingSpecification := &reportingSpecificationCreator{creator: specificationService, report: progress}
+	reportingSpecification := &reportingSpecificationService{service: specificationService, report: progress}
 	implementationService := workflow.NewImplementationService(
 		manifestStore, transitionService, implementationPrompt, fixChecksPrompt, implementationRunner, resultDecoder,
 		checks.NewExecutor(processRunner), gitrepo.NewDiffInspector("git", processRunner), gitrepo.NewWorktreeInspector("git", processRunner),
 		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, configuration.Checks, configuration.ProtectedPaths, resumePrompt,
 	)
+	reportingImplementation := &reportingImplementationService{service: implementationService, report: progress}
 	reviewService := workflow.NewReviewService(
 		manifestStore, transitionService, reviewPrompt, fixReviewPrompt, reviewRunner, reviewDecoder, resultDecoder,
 		checks.NewExecutor(processRunner), gitrepo.NewDiffInspector("git", processRunner), gitrepo.NewWorktreeInspector("git", processRunner), manifestStore,
 		installed.Schemas[assets.SchemaReviewResult].Path, installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout,
 		configuration.Checks, configuration.ProtectedPaths, configuration.Review.MaxAttempts, resumePrompt,
 	)
+	reportingReview := &reportingReviewService{service: reviewService, report: progress}
 	blockers := workflow.NewBlockerService(manifestStore, transitionService, githubClient, time.Now)
-	continuation := workflow.NewResumeContinuationService(specificationService, implementationService, reviewService)
+	continuation := workflow.NewResumeContinuationService(reportingSpecification, reportingImplementation, reportingReview)
 	publication := workflow.NewPublicationService(
 		manifestStore, transitionService, manifestStore, checks.NewExecutor(processRunner), gitrepo.NewWorktreeInspector("git", processRunner),
 		gitrepo.NewPublicationManager("git", processRunner), githubClient, configuration.Checks,
 	)
 	runService := workflow.NewRunService(
-		state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
-		state.NewWorkflowID, reportingSpecification, implementationService, reviewService, blockers,
+		state.NewFileLocker(), manifestReader, &reportingFetcher{fetcher: githubClient, report: progress},
+		&reportingBootstrapper{bootstrapper: worktreeBootstrapper, report: progress}, manifestStore,
+		state.NewWorkflowID, reportingSpecification, reportingImplementation, reportingReview, blockers,
 	).WithFinalizer(publication)
 	resumeService := workflow.NewResumeService(
 		state.NewFileLocker(), manifestReader, transitionService, githubClient, blockers, continuation,
@@ -191,27 +189,93 @@ func newWorkflowRuntime(
 	}, nil
 }
 
-type reportingSpecificationCreator struct {
-	creator workflow.SpecificationCreator
+type reportingFetcher struct {
+	fetcher githubapi.Fetcher
 	report  cli.ProgressReporter
 }
 
-func (creator *reportingSpecificationCreator) Create(ctx context.Context, controllerRoot, workflowID string) (workflow.SpecificationResult, error) {
-	result, err := creator.creator.Create(ctx, controllerRoot, workflowID)
-	if err != nil || result.Blocker != nil || result.Manifest.SpecificationPath == "" || creator.report == nil {
-		return result, err
+func (fetcher *reportingFetcher) Fetch(ctx context.Context, controllerRoot string, issueNumber int) (githubapi.Snapshot, error) {
+	snapshot, err := fetcher.fetcher.Fetch(ctx, controllerRoot, issueNumber)
+	if err == nil {
+		reportMessage(fetcher.report, fmt.Sprintf("✓ Loaded GitHub issue #%d", issueNumber))
 	}
-	specificationPath := result.Manifest.SpecificationPath
-	absolutePath := filepath.Join(
-		controllerRoot,
-		filepath.FromSlash(result.Manifest.Worktree),
-		filepath.FromSlash(specificationPath),
-	)
-	creator.report(cli.ProgressUpdate{
-		Message: path.Base(specificationPath),
-		URL:     (&url.URL{Scheme: "file", Path: absolutePath}).String(),
-	})
-	return result, nil
+	return snapshot, err
+}
+
+type reportingBootstrapper struct {
+	bootstrapper workflow.Bootstrapper
+	report       cli.ProgressReporter
+}
+
+func (bootstrapper *reportingBootstrapper) Continue(ctx context.Context, request workflow.Bootstrap) (gitrepo.Worktree, error) {
+	worktree, err := bootstrapper.bootstrapper.Continue(ctx, request)
+	if err == nil {
+		reportMessage(bootstrapper.report, "✓ Created worktree "+worktree.Branch)
+	}
+	return worktree, err
+}
+
+type reportingSpecificationService struct {
+	service *workflow.SpecificationService
+	report  cli.ProgressReporter
+}
+
+func (service *reportingSpecificationService) Create(ctx context.Context, controllerRoot, workflowID string) (workflow.SpecificationResult, error) {
+	result, err := service.service.Create(ctx, controllerRoot, workflowID)
+	reportPhaseComplete(service.report, "Specification", result.Blocker, err)
+	return result, err
+}
+
+func (service *reportingSpecificationService) Resume(ctx context.Context, controllerRoot, workflowID string) (workflow.SpecificationResult, error) {
+	result, err := service.service.Resume(ctx, controllerRoot, workflowID)
+	reportPhaseComplete(service.report, "Specification", result.Blocker, err)
+	return result, err
+}
+
+type reportingImplementationService struct {
+	service *workflow.ImplementationService
+	report  cli.ProgressReporter
+}
+
+func (service *reportingImplementationService) Implement(ctx context.Context, controllerRoot, workflowID string) (workflow.ImplementationResult, error) {
+	result, err := service.service.Implement(ctx, controllerRoot, workflowID)
+	reportPhaseComplete(service.report, "Implementation", result.Blocker, err)
+	return result, err
+}
+
+func (service *reportingImplementationService) Resume(ctx context.Context, controllerRoot, workflowID string) (workflow.ImplementationResult, error) {
+	result, err := service.service.Resume(ctx, controllerRoot, workflowID)
+	reportPhaseComplete(service.report, "Implementation", result.Blocker, err)
+	return result, err
+}
+
+type reportingReviewService struct {
+	service *workflow.ReviewService
+	report  cli.ProgressReporter
+}
+
+func (service *reportingReviewService) Review(ctx context.Context, controllerRoot, workflowID string, results []checks.Result, baseline gitrepo.WorktreeBaseline) (workflow.ReviewResult, error) {
+	result, err := service.service.Review(ctx, controllerRoot, workflowID, results, baseline)
+	reportPhaseComplete(service.report, "Review", result.Blocker, err)
+	return result, err
+}
+
+func (service *reportingReviewService) Resume(ctx context.Context, controllerRoot, workflowID string) (workflow.ReviewResult, error) {
+	result, err := service.service.Resume(ctx, controllerRoot, workflowID)
+	reportPhaseComplete(service.report, "Review", result.Blocker, err)
+	return result, err
+}
+
+func reportPhaseComplete(report cli.ProgressReporter, phase string, blocker *workflow.BlockerRequest, err error) {
+	if err == nil && blocker == nil {
+		reportMessage(report, "\n✓ "+phase+" complete")
+	}
+}
+
+func reportMessage(report cli.ProgressReporter, message string) {
+	if report != nil {
+		report(cli.ProgressUpdate{Message: message})
+	}
 }
 
 type progressAgentRunner struct {
@@ -231,7 +295,7 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	}
 	message := runner.startMessage
 	if message == "" {
-		message = "Creating specification. This can take a few moments..."
+		message = "● Agent\n  └─ working..."
 	}
 	runner.startOnce.Do(func() {
 		runner.report(cli.ProgressUpdate{Message: message})
@@ -240,9 +304,6 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	request.Progress = func(event agent.ProgressEvent) {
 		if upstreamProgress != nil {
 			upstreamProgress(event)
-		}
-		if message := readableAgentProgress(event); message != "" {
-			runner.report(cli.ProgressUpdate{Message: message, Untrusted: true})
 		}
 	}
 	if runner.interval <= 0 {
@@ -273,53 +334,4 @@ func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Reques
 	close(done)
 	reporting.Wait()
 	return result, err
-}
-
-func readableAgentProgress(event agent.ProgressEvent) string {
-	message := strings.TrimRight(event.Message, "\r\n")
-	switch event.Kind {
-	case agent.ProgressMessage:
-		if message != "" {
-			var outcome agent.Outcome
-			if json.Unmarshal([]byte(message), &outcome) == nil {
-				switch {
-				case outcome.Status == agent.OutcomeCompleted && outcome.Summary != "":
-					message = outcome.Summary
-				case outcome.Status == agent.OutcomeBlocked && outcome.Question != "":
-					return prefixProgressLines("Agent question: ", outcome.Question)
-				}
-			}
-			return prefixProgressLines("Agent: ", message)
-		}
-	case agent.ProgressReasoning:
-		if message != "" {
-			return prefixProgressLines("Reasoning: ", message)
-		}
-	case agent.ProgressCommand:
-		if message != "" {
-			return prefixProgressLines("Command: ", message)
-		}
-	case agent.ProgressCommandOutput:
-		var output strings.Builder
-		if message != "" {
-			output.WriteString("Command output:\n")
-			output.WriteString(prefixProgressLines("│ ", message))
-		}
-		if event.ExitCode != nil {
-			if output.Len() > 0 {
-				output.WriteByte('\n')
-			}
-			fmt.Fprintf(&output, "Command exit code: %d", *event.ExitCode)
-		}
-		return output.String()
-	}
-	return ""
-}
-
-func prefixProgressLines(prefix, message string) string {
-	lines := strings.Split(message, "\n")
-	for index := range lines {
-		lines[index] = prefix + lines[index]
-	}
-	return strings.Join(lines, "\n")
 }

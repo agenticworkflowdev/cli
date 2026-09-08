@@ -19,6 +19,8 @@ var (
 	credentialAssignment   = regexp.MustCompile(`(?i)\b((?:[A-Za-z0-9]+[_-])*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)(?:[_-][A-Za-z0-9]+)*)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
 )
 
+const automatedCommentFooter = "_This comment was generated automatically by AWDev_"
+
 // AuthenticatedActorResolver identifies the principal selected by GitHub
 // authentication.
 type AuthenticatedActorResolver interface {
@@ -220,14 +222,18 @@ func (service *BlockerService) persistBlockerPublisher(controllerRoot string, ma
 }
 
 func blockerCommentBody(blocker *state.Blocker) string {
-	return fmt.Sprintf("AWDev needs human input to continue the `%s` phase:\n\n%s\n\n%s", blocker.Phase, blocker.Question, blocker.Marker)
+	return fmt.Sprintf(
+		"## 🤖 AWDev\n\nAWDev needs human input to continue the `%s` phase:\n\n%s\n\n%s\n\n%s",
+		blocker.Phase,
+		blocker.Question,
+		blocker.Marker,
+		automatedCommentFooter,
+	)
 }
 
 func hasCanonicalMarker(body, marker string) bool {
-	trimmed := strings.TrimRight(body, "\r\n")
-	lastNewline := strings.LastIndexByte(trimmed, '\n')
-	lastLine := strings.TrimSuffix(trimmed[lastNewline+1:], "\r")
-	return lastLine == marker
+	normalized := strings.ReplaceAll(strings.TrimRight(body, "\r\n"), "\r\n", "\n")
+	return strings.HasSuffix(normalized, marker) || strings.HasSuffix(normalized, marker+"\n\n"+automatedCommentFooter)
 }
 
 func redactBlockerQuestion(question string) string {

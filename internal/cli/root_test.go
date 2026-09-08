@@ -444,7 +444,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "GitHub issue: #17\nWorktree: .awdev/worktrees/gh-17-a-title\nBranch: gh-17-a-title\nSpecification: .awdev/specs/gh-17-a-title.md\nReview: passed\n"; got != want {
+	if got, want := output.String(), ""; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

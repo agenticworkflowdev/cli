@@ -195,7 +195,15 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseDone || manifest.Status != state.StatusDone || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" || manifest.Review == nil || manifest.Review.Attempt != 1 || manifest.PullRequest == nil || manifest.PullRequest.Number != 23 {
 		t.Fatalf("saved manifest = %#v", manifest)
 	}
-	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\nReview: passed\nPull request: https://github.com/owner/repository/pull/23\n"
+	wantOutput := "✓ Loaded GitHub issue #17\n" +
+		"✓ Created worktree gh-17-a-title\n" +
+		"● Specification agent\n  └─ writing specification...\n" +
+		"\n✓ Specification complete\n" +
+		"● Implementation agent\n  └─ implementing changes...\n" +
+		"\n✓ Implementation complete\n" +
+		"● Review agent\n" +
+		"\n✓ Review complete\n" +
+		"✓ Pull request created: https://github.com/owner/repository/pull/23\n"
 	if got := output.String(); got != wantOutput {
 		t.Fatalf("output = %q, want %q", got, wantOutput)
 	}

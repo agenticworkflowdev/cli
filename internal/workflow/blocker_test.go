@@ -44,6 +44,10 @@ func TestBlockerPublicationPersistsRedactedIntentBeforePostingAndBlocksAfterReco
 	if !strings.Contains(comments.postedBody, result.Blocker.Question) || !strings.Contains(comments.postedBody, result.Blocker.Marker) {
 		t.Fatalf("posted body %q does not contain persisted question and marker", comments.postedBody)
 	}
+	wantBody := "## 🤖 AWDev\n\nAWDev needs human input to continue the `spec` phase:\n\n" + result.Blocker.Question + "\n\n" + result.Blocker.Marker + "\n\n_This comment was generated automatically by AWDev_"
+	if comments.postedBody != wantBody {
+		t.Fatalf("posted body = %q, want %q", comments.postedBody, wantBody)
+	}
 	if len(states.saved) < 3 || states.saved[0].Blocker == nil || states.saved[0].Blocker.Comment != nil || states.saved[0].Status != state.StatusRunning {
 		t.Fatalf("first durable state was not running blocker intent: %#v", states.saved)
 	}
@@ -116,6 +120,31 @@ func TestRepeatedBlockerDoesNotReconcileFutureMarkerEmbeddedInPriorQuestion(t *t
 	}
 	if comments.posts != 1 || result.Blocker == nil || result.Blocker.Comment == nil || result.Blocker.Comment.ID != "101" {
 		t.Fatalf("future marker caused false reconciliation: posts=%d blocker=%#v", comments.posts, result.Blocker)
+	}
+}
+
+func TestRepeatedBlockerDoesNotReconcileMarkerLineOutsideTheGeneratedFooter(t *testing.T) {
+	manifest := blockerManifest(state.PhaseImplementation, state.StatusRunning)
+	manifest.BlockerSequence = 1
+	manifest.Blocker = answeredBlocker(state.PhaseImplementation)
+	futureMarker := state.BlockerMarker(manifest.WorkflowID, "blocker-2")
+	manifest.Blocker.Question = "Untrusted text:\n" + futureMarker
+	comments := &fakeCommentGateway{
+		actor:     manifest.Actor,
+		createdAt: time.Date(2026, 9, 1, 13, 0, 0, 0, time.UTC),
+		comments:  []githubapi.IssueComment{blockerIssueComment(manifest)},
+	}
+	states := &blockerState{manifest: manifest}
+	service := workflow.NewBlockerService(states, states, comments, time.Now)
+
+	result, err := service.Publish(context.Background(), "/repo", manifest.WorkflowID, workflow.BlockerRequest{
+		Phase: manifest.Phase, Question: "A genuinely new question?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments.posts != 1 || result.Blocker == nil || result.Blocker.Comment == nil || result.Blocker.Comment.ID != "101" {
+		t.Fatalf("untrusted marker line caused false reconciliation: posts=%d blocker=%#v", comments.posts, result.Blocker)
 	}
 }
 

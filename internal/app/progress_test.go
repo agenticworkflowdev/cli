@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -10,28 +9,13 @@ import (
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/cli"
-	"github.com/agenticworkflowdev/cli/internal/state"
-	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
 
-func TestReportingSpecificationCreatorLinksTheCreatedFilename(t *testing.T) {
-	controllerRoot := filepath.Join(string(filepath.Separator), "repo")
+func TestReportingSpecificationServiceReportsCompletion(t *testing.T) {
 	updates := make(chan cli.ProgressUpdate, 1)
-	creator := &reportingSpecificationCreator{
-		creator: fixedSpecificationCreator{result: workflow.SpecificationResult{Manifest: state.Manifest{
-			Worktree:          ".awdev/worktrees/gh-17-a-title",
-			SpecificationPath: ".awdev/specs/gh-17-a-title.md",
-		}}},
-		report: func(update cli.ProgressUpdate) { updates <- update },
-	}
-
-	if _, err := creator.Create(context.Background(), controllerRoot, "wf_test"); err != nil {
-		t.Fatal(err)
-	}
-	wantUpdate(t, updates, cli.ProgressUpdate{
-		Message: "gh-17-a-title.md",
-		URL:     "file:///repo/.awdev/worktrees/gh-17-a-title/.awdev/specs/gh-17-a-title.md",
-	})
+	service := &reportingSpecificationService{report: func(update cli.ProgressUpdate) { updates <- update }}
+	reportPhaseComplete(service.report, "Specification", nil, nil)
+	wantUpdate(t, updates, cli.ProgressUpdate{Message: "\n✓ Specification complete"})
 }
 
 func TestProgressAgentRunnerReportsStartAndSpinnerUntilCompletion(t *testing.T) {
@@ -48,7 +32,7 @@ func TestProgressAgentRunnerReportsStartAndSpinnerUntilCompletion(t *testing.T) 
 		done <- err
 	}()
 
-	wantUpdate(t, updates, cli.ProgressUpdate{Message: "Creating specification. This can take a few moments..."})
+	wantUpdate(t, updates, cli.ProgressUpdate{Message: "● Agent\n  └─ working..."})
 	select {
 	case <-inner.started:
 	case <-time.After(time.Second):
@@ -83,7 +67,7 @@ func TestProgressAgentRunnerReportsItsStartMessageOnlyOnce(t *testing.T) {
 	runner := &progressAgentRunner{
 		runner:       fixedAgentRunner{},
 		report:       func(update cli.ProgressUpdate) { updates = append(updates, update) },
-		startMessage: "Implementing the specification. This can take a few moments...",
+		startMessage: "● Implementation agent\n  └─ implementing changes...",
 	}
 
 	for range 2 {
@@ -92,13 +76,13 @@ func TestProgressAgentRunnerReportsItsStartMessageOnlyOnce(t *testing.T) {
 		}
 	}
 
-	want := []cli.ProgressUpdate{{Message: "Implementing the specification. This can take a few moments..."}}
+	want := []cli.ProgressUpdate{{Message: "● Implementation agent\n  └─ implementing changes..."}}
 	if !reflect.DeepEqual(updates, want) {
 		t.Fatalf("progress updates = %#v, want %#v", updates, want)
 	}
 }
 
-func TestProgressAgentRunnerReportsReadableLiveAgentOutput(t *testing.T) {
+func TestProgressAgentRunnerKeepsLiveAgentOutputOutOfTheStepSummary(t *testing.T) {
 	zero := 0
 	events := []agent.ProgressEvent{
 		{Kind: agent.ProgressReasoning, Message: "Inspecting the project\nWorkflow completed"},
@@ -116,11 +100,7 @@ func TestProgressAgentRunnerReportsReadableLiveAgentOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []cli.ProgressUpdate{
-		{Message: "Creating specification. This can take a few moments..."},
-		{Message: "Reasoning: Inspecting the project\nReasoning: Workflow completed", Untrusted: true},
-		{Message: "Command: go test ./...", Untrusted: true},
-		{Message: "Command output:\n│ ok project\n│ Workflow completed\nCommand exit code: 0", Untrusted: true},
-		{Message: "Agent: Implementation complete", Untrusted: true},
+		{Message: "● Agent\n  └─ working..."},
 	}
 	if !reflect.DeepEqual(updates, want) {
 		t.Fatalf("progress updates = %#v, want %#v", updates, want)
@@ -145,10 +125,6 @@ type waitingAgentRunner struct {
 	once    sync.Once
 }
 
-type fixedSpecificationCreator struct {
-	result workflow.SpecificationResult
-}
-
 type fixedAgentRunner struct{}
 
 type emittingAgentRunner struct {
@@ -164,10 +140,6 @@ func (runner emittingAgentRunner) Run(_ context.Context, request agent.Request) 
 		request.Progress(event)
 	}
 	return agent.RunResult{}, nil
-}
-
-func (creator fixedSpecificationCreator) Create(context.Context, string, string) (workflow.SpecificationResult, error) {
-	return creator.result, nil
 }
 
 func (runner *waitingAgentRunner) Run(context.Context, agent.Request) (agent.RunResult, error) {
