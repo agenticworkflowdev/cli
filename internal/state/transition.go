@@ -94,6 +94,27 @@ func validateTransitionData(current, next Manifest) error {
 	if current.PullRequest != nil && !samePullRequest(current.PullRequest, next.PullRequest) {
 		return errors.New("recorded pull request identity cannot change")
 	}
+	if current.PullRequest == nil && next.PullRequest != nil && next.CommitSHA == "" {
+		return errors.New("controller commit identity must be persisted before pull request identity")
+	}
+	if current.CommitTreeSHA != "" && current.CommitTreeSHA != next.CommitTreeSHA {
+		return errors.New("recorded controller commit tree cannot change")
+	}
+	if current.CommitTreeSHA == "" && next.CommitTreeSHA != "" && !(current.Phase == PhasePullRequest && current.Status == StatusRunning && next.Phase == PhasePullRequest && next.Status == StatusRunning) {
+		return errors.New("controller commit tree can be introduced only during pull_request/running")
+	}
+	if current.CommitSHA != "" && current.CommitSHA != next.CommitSHA {
+		return errors.New("recorded controller commit identity cannot change")
+	}
+	if current.CommitSHA == "" && next.CommitSHA != "" && !(current.Phase == PhasePullRequest && current.Status == StatusRunning && next.Phase == PhasePullRequest && next.Status == StatusRunning) {
+		return errors.New("controller commit identity can be introduced only during pull_request/running")
+	}
+	if current.CommitSHA == "" && next.CommitSHA != "" && current.CommitTreeSHA == "" {
+		return errors.New("controller commit tree must be persisted before controller commit identity")
+	}
+	if current.Phase == PhaseReview && next.Phase == PhasePullRequest && (next.CommitTreeSHA != "" || next.CommitSHA != "") {
+		return errors.New("pull_request phase must be persisted before its controller commit intent")
+	}
 	if next.Phase == PhaseDone {
 		if current.PullRequest == nil || !samePullRequest(current.PullRequest, next.PullRequest) {
 			return errors.New("pull request identity must be persisted before completion")

@@ -136,6 +136,8 @@ case "$1 $2" in
   "repo view") printf '%s' '{"nameWithOwner":"owner/repository","defaultBranchRef":{"name":"main"}}' ;;
   "api graphql") printf '%s' '{"data":{"viewer":{"login":"octocat"}}}' ;;
   "issue view") printf '%s' '{"number":17,"title":"A title","body":"body with $() ; and <!-- marker -->","url":"https://github.com/owner/repository/issues/17","state":"OPEN","updatedAt":"2026-08-28T12:00:00Z"}' ;;
+  "pr list") printf '%s' '[]' ;;
+  "pr create") cat >/dev/null; printf '%s\n' 'https://github.com/owner/repository/pull/23' ;;
   *) exit 2 ;;
 esac
 `
@@ -190,10 +192,10 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 		t.Fatal("saved manifest was not found by issue identity")
 	}
 	manifest := *existing.Manifest
-	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseReview || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" || manifest.Review == nil || manifest.Review.Attempt != 1 {
+	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseDone || manifest.Status != state.StatusDone || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" || manifest.Review == nil || manifest.Review.Attempt != 1 || manifest.PullRequest == nil || manifest.PullRequest.Number != 23 {
 		t.Fatalf("saved manifest = %#v", manifest)
 	}
-	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\nReview: passed\n"
+	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\nReview: passed\nPull request: https://github.com/owner/repository/pull/23\n"
 	if got := output.String(); got != wantOutput {
 		t.Fatalf("output = %q, want %q", got, wantOutput)
 	}
@@ -211,14 +213,14 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 	if string(specificationContents) != "# Generated specification\n" {
 		t.Fatalf("generated specification = %q", specificationContents)
 	}
-	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got != baseSHA {
-		t.Fatalf("worktree HEAD = %q, want %q", got, baseSHA)
+	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got == baseSHA {
+		t.Fatalf("worktree HEAD was not advanced by controller commit: %q", got)
 	}
-	if got := gitOutputIn(t, worktree, "branch", "--show-current"); got != "" {
-		t.Fatalf("worktree branch = %q, want detached HEAD", got)
+	if got := gitOutputIn(t, worktree, "branch", "--show-current"); got != "gh-17-a-title" {
+		t.Fatalf("worktree branch = %q", got)
 	}
-	if got := gitOutputIn(t, repository, "rev-parse", "gh-17-a-title"); got != baseSHA {
-		t.Fatalf("workflow branch HEAD = %q, want %q", got, baseSHA)
+	if got := gitOutputIn(t, repository, "rev-parse", "gh-17-a-title"); got == baseSHA {
+		t.Fatalf("workflow branch HEAD was not advanced: %q", got)
 	}
 	if got := gitOutputIn(t, repository, "branch", "--show-current"); got != "main" {
 		t.Fatalf("controller branch changed to %q", got)

@@ -176,6 +176,42 @@ func TestClientPostsIssueCommentBodyOnlyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestClientListsPullRequestsForExactRepositoryAndHead(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{{stdout: `[{"number":23,"url":"https://github.com/owner/repository/pull/23","headRefName":"gh-17-title","headRepositoryOwner":{"login":"owner"},"baseRefName":"main","state":"CLOSED"}]`}}}
+	pullRequests, err := githubapi.NewClient("gh", runner).ListPullRequests(context.Background(), "/repo", "owner/repository", "gh-17-title")
+	if err != nil {
+		t.Fatalf("list pull requests: %v", err)
+	}
+	if len(pullRequests) != 1 || pullRequests[0].Number != 23 || pullRequests[0].State != "CLOSED" || pullRequests[0].HeadOwner != "owner" {
+		t.Fatalf("pull requests = %#v", pullRequests)
+	}
+	want := []string{"gh", "pr", "list", "--repo", "owner/repository", "--head", "gh-17-title", "--state", "all", "--json", "number,url,headRefName,headRepositoryOwner,baseRefName,state"}
+	if !reflect.DeepEqual(runner.requests[0].Argv, want) {
+		t.Fatalf("argv = %#v, want %#v", runner.requests[0].Argv, want)
+	}
+}
+
+func TestClientCreatesPullRequestWithBodyOnlyThroughStdin(t *testing.T) {
+	body := "Closes #17\n\ntext with --flags $(command)"
+	runner := &fakeRunner{responses: []fakeResponse{{stdout: "https://github.com/owner/repository/pull/24\n"}}}
+	pullRequest, err := githubapi.NewClient("gh", runner).CreatePullRequest(context.Background(), "/repo", githubapi.CreatePullRequestRequest{
+		Repository: "owner/repository", Head: "gh-17-title", Base: "main", Title: "A title", Body: body,
+	})
+	if err != nil {
+		t.Fatalf("create pull request: %v", err)
+	}
+	if pullRequest.Number != 24 || pullRequest.URL != "https://github.com/owner/repository/pull/24" {
+		t.Fatalf("pull request = %#v", pullRequest)
+	}
+	want := []string{"gh", "pr", "create", "--repo", "owner/repository", "--head", "gh-17-title", "--base", "main", "--title", "A title", "--body-file", "-"}
+	if !reflect.DeepEqual(runner.requests[0].Argv, want) {
+		t.Fatalf("argv = %#v, want %#v", runner.requests[0].Argv, want)
+	}
+	if got := string(runner.requests[0].Stdin); got != body {
+		t.Fatalf("stdin = %q, want %q", got, body)
+	}
+}
+
 func issueJSON(number int, state string) string {
 	return fmt.Sprintf(`{"number":%d,"title":"title","body":"","url":"https://github.com/owner/repository/issues/%d","state":%q,"updatedAt":"2026-08-28T12:00:00Z"}`, number, number, state)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,11 +138,23 @@ func TestTransitionRequiresBlockerIntentAnswerAndPullRequestPersistence(t *testi
 		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, done); err == nil {
 			t.Fatal("workflow completed before pull request identity was persisted")
 		}
-		withPullRequest := current
+		withTree := current
+		withTree.CommitTreeSHA = strings.Repeat("c", 40)
+		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, withTree); err != nil {
+			t.Fatalf("persist controller commit tree: %v", err)
+		}
+		withCommit := withTree
+		withCommit.CommitSHA = strings.Repeat("b", 40)
+		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, withCommit); err != nil {
+			t.Fatalf("persist controller commit: %v", err)
+		}
+		withPullRequest := withCommit
 		withPullRequest.PullRequest = done.PullRequest
 		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, withPullRequest); err != nil {
 			t.Fatalf("persist pull request: %v", err)
 		}
+		done.CommitSHA = withCommit.CommitSHA
+		done.CommitTreeSHA = withCommit.CommitTreeSHA
 		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, done); err != nil {
 			t.Fatalf("complete after pull request persistence: %v", err)
 		}

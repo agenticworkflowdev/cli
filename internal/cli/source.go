@@ -30,7 +30,7 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			return err
 		},
 		RunE: func(command *cobra.Command, args []string) error {
-			if (operation == OperationRun || operation == OperationResume) && services.Getenv("AWDEV_WORKER") == "1" {
+			if (operation == OperationRun || operation == OperationResume || operation == OperationRetry) && services.Getenv("AWDEV_WORKER") == "1" {
 				return fmt.Errorf("awdev %s cannot be invoked from an awdev worker", operation)
 			}
 
@@ -71,6 +71,14 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 				}
 				return renderGitHubResume(command, result)
 			}
+			if operation == OperationRetry && item.Source == SourceGitHub && services.RetryGitHub != nil {
+				progress := newProgressReporter(command.ErrOrStderr())
+				result, err := services.RetryGitHub(command.Context(), root, item.Number, progress)
+				if err != nil {
+					return err
+				}
+				return renderGitHubPublication(command, result)
+			}
 			if services.Execute == nil {
 				return fmt.Errorf("awdev %s github is not implemented yet", operation)
 			}
@@ -107,13 +115,26 @@ func renderGitHubResume(command *cobra.Command, result workflow.ResumeResult) er
 			return err
 		}
 		if reviewPassed(result.Review) {
-			_, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed")
+			if _, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed"); err != nil {
+				return err
+			}
+		}
+		if result.Manifest.PullRequest != nil {
+			_, err := fmt.Fprintf(command.OutOrStdout(), "Pull request: %s\n", result.Manifest.PullRequest.URL)
 			return err
 		}
 		return nil
 	default:
 		return errors.New("GitHub resume result has an unknown outcome")
 	}
+}
+
+func renderGitHubPublication(command *cobra.Command, result workflow.PublicationResult) error {
+	if result.Manifest.Phase != state.PhaseDone || result.Manifest.Status != state.StatusDone || result.Manifest.PullRequest == nil {
+		return errors.New("completed GitHub publication result is missing its pull request")
+	}
+	_, err := fmt.Fprintf(command.OutOrStdout(), "Workflow %s completed.\nPull request: %s\n", result.Manifest.WorkflowID, result.Manifest.PullRequest.URL)
+	return err
 }
 
 func newProgressReporter(writer io.Writer) ProgressReporter {
@@ -233,14 +254,20 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 		if result.Existing.Manifest == nil {
 			return errors.New("existing workflow result is missing its manifest")
 		}
-		_, err := fmt.Fprintf(
+		if _, err := fmt.Fprintf(
 			command.OutOrStdout(),
 			"Workflow %s already exists: %s/%s.\n",
 			result.WorkflowID,
 			result.Existing.Manifest.Phase,
 			result.Existing.Manifest.Status,
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		if result.Existing.Manifest.PullRequest != nil {
+			_, err := fmt.Fprintf(command.OutOrStdout(), "Pull request: %s\n", result.Existing.Manifest.PullRequest.URL)
+			return err
+		}
+		return nil
 	}
 	if result.Manifest == nil {
 		return errors.New("completed GitHub run result is missing its manifest")
@@ -261,6 +288,11 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 	}
 	if reviewPassed(result.Review) {
 		if _, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed"); err != nil {
+			return err
+		}
+	}
+	if result.Manifest.PullRequest != nil {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "Pull request: %s\n", result.Manifest.PullRequest.URL); err != nil {
 			return err
 		}
 	}

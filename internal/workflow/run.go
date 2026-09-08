@@ -32,6 +32,7 @@ type RunResult struct {
 	Specification  *SpecificationResult
 	Implementation *ImplementationResult
 	Review         *ReviewResult
+	Publication    *PublicationResult
 }
 
 // Bootstrap contains the validated transient data passed to Slice 3. It is not
@@ -58,6 +59,13 @@ type RunService struct {
 	implementation ImplementationRunner
 	reviewer       Reviewer
 	publisher      BlockerPublisher
+	finalizer      Finalizer
+}
+
+// WithFinalizer installs the terminal publication phase.
+func (service *RunService) WithFinalizer(finalizer Finalizer) *RunService {
+	service.finalizer = finalizer
+	return service
 }
 
 // NewRunService constructs the run application service.
@@ -89,7 +97,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if err != nil {
 		return RunResult{}, fmt.Errorf("check existing workflow: %w", err)
 	}
-	if existing.Exists && !pendingBlockerIntent(existing.Manifest) {
+	if existing.Exists && !pendingBlockerIntent(existing.Manifest) && !pendingPublication(existing.Manifest, service.finalizer) {
 		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
 
@@ -116,6 +124,13 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 			published, publishErr := service.publisher.Publish(ctx, controllerRoot, existing.Manifest.WorkflowID, BlockerRequest{Phase: existing.Manifest.Blocker.Phase, Question: existing.Manifest.Blocker.Question})
 			existing.Manifest = &published
 			return RunResult{WorkflowID: published.WorkflowID, Outcome: RunExisting, Existing: existing, Manifest: &published}, publishErr
+		}
+		if pendingPublication(existing.Manifest, service.finalizer) {
+			publication, publishErr := service.finalizer.Reconcile(ctx, controllerRoot, existing.Manifest.WorkflowID)
+			if publication.Manifest.WorkflowID != "" {
+				existing.Manifest = &publication.Manifest
+			}
+			return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing, Manifest: existing.Manifest, Publication: &publication}, publishErr
 		}
 		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
@@ -200,11 +215,23 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
 		Manifest: &reviewResult.Manifest, Specification: &specification, Implementation: &implementation, Review: &reviewResult,
 	}
+	if err != nil || reviewResult.Blocker != nil || service.finalizer == nil {
+		return result, err
+	}
+	publication, err := service.finalizer.Finalize(ctx, controllerRoot, workflowID, reviewResult.CheckedState)
+	if publication.Manifest.WorkflowID != "" {
+		result.Manifest = &publication.Manifest
+	}
+	result.Publication = &publication
 	return result, err
 }
 
 func pendingBlockerIntent(manifest *state.Manifest) bool {
 	return manifest != nil && manifest.Status == state.StatusRunning && manifest.Blocker != nil && manifest.Blocker.Answer == nil
+}
+
+func pendingPublication(manifest *state.Manifest, finalizer Finalizer) bool {
+	return finalizer != nil && manifest != nil && manifest.Phase == state.PhasePullRequest && manifest.Status == state.StatusRunning
 }
 
 func (service *RunService) publishBlocker(ctx context.Context, controllerRoot, workflowID string, blocker *BlockerRequest) (state.Manifest, error) {

@@ -19,6 +19,7 @@ import (
 type WorktreeBaseline struct {
 	worktree string
 	files    map[string]fileSignature
+	gitState []byte
 }
 
 // WorktreeStateInspector is the filesystem-immutability seam used around
@@ -46,7 +47,11 @@ func (inspector *WorktreeInspector) Capture(ctx context.Context, worktree string
 	if err != nil {
 		return WorktreeBaseline{}, err
 	}
-	return WorktreeBaseline{worktree: worktree, files: files}, nil
+	gitState, err := inspector.snapshotGitState(ctx, worktree)
+	if err != nil {
+		return WorktreeBaseline{}, err
+	}
+	return WorktreeBaseline{worktree: worktree, files: files, gitState: gitState}, nil
 }
 
 // Inspect returns every path whose worktree state differs from the baseline.
@@ -59,8 +64,64 @@ func (inspector *WorktreeInspector) Inspect(ctx context.Context, worktree string
 		return nil, err
 	}
 	changed := changedSnapshotPaths(baseline.files, current)
+	gitState, err := inspector.snapshotGitState(ctx, worktree)
+	if err != nil {
+		return nil, err
+	}
+	// File mutations already identify the affected paths. Report .git only when
+	// refs or the index changed without a corresponding filesystem mutation,
+	// such as an agent staging or committing the approved contents.
+	if !bytes.Equal(baseline.gitState, gitState) && len(changed) == 0 {
+		changed = append(changed, ".git")
+	}
 	sort.Strings(changed)
 	return changed, nil
+}
+
+func (inspector *WorktreeInspector) snapshotGitState(ctx context.Context, worktree string) ([]byte, error) {
+	head, err := inspector.runGitStateCommand(ctx, worktree, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("capture worktree HEAD: %w", err)
+	}
+	ref, err := inspector.runGitStateCommand(ctx, worktree, "symbolic-ref", "--quiet", "HEAD")
+	if isExitCode(err, 1) {
+		ref = nil
+	} else if err != nil {
+		return nil, fmt.Errorf("capture worktree branch ref: %w", err)
+	}
+	index, err := inspector.runGitStateCommand(ctx, worktree, "ls-files", "--stage", "-z", "--")
+	if err != nil {
+		return nil, fmt.Errorf("capture worktree index: %w", err)
+	}
+	indexFlags, err := inspector.runGitStateCommand(ctx, worktree, "ls-files", "-v", "-z", "--")
+	if err != nil {
+		return nil, fmt.Errorf("capture worktree index flags: %w", err)
+	}
+	state := make([]byte, 0, len(head)+len(ref)+len(index)+len(indexFlags)+4)
+	state = append(state, bytes.TrimSpace(head)...)
+	state = append(state, 0)
+	state = append(state, bytes.TrimSpace(ref)...)
+	state = append(state, 0)
+	state = append(state, index...)
+	state = append(state, 0)
+	state = append(state, indexFlags...)
+	return state, nil
+}
+
+func (inspector *WorktreeInspector) runGitStateCommand(ctx context.Context, worktree string, arguments ...string) ([]byte, error) {
+	result, err := inspector.runner.Run(ctx, processrun.Request{
+		Directory:   worktree,
+		Argv:        append([]string{inspector.binary}, arguments...),
+		StdoutLimit: diffOutputLimit,
+		StderrLimit: gitStderrLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.StdoutTruncated {
+		return nil, errors.New("worktree Git state exceeded the output limit")
+	}
+	return append([]byte(nil), result.Stdout...), nil
 }
 
 func (inspector *WorktreeInspector) snapshot(ctx context.Context, worktree string) (map[string]fileSignature, error) {

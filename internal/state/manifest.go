@@ -121,6 +121,8 @@ type Manifest struct {
 	BlockerSequence   int             `json:"blocker_sequence,omitempty"`
 	Blocker           *Blocker        `json:"blocker,omitempty"`
 	LastError         *WorkflowError  `json:"last_error,omitempty"`
+	CommitTreeSHA     string          `json:"commit_tree_sha,omitempty"`
+	CommitSHA         string          `json:"commit_sha,omitempty"`
 	PullRequest       *PullRequest    `json:"pull_request,omitempty"`
 }
 
@@ -254,6 +256,25 @@ func (manifest Manifest) Validate() error {
 		want := "https://github.com/" + manifest.Repository + "/pull/" + strconv.Itoa(manifest.PullRequest.Number)
 		if manifest.PullRequest.URL != want {
 			return errors.New("pull request URL does not match the manifest repository and number")
+		}
+	}
+	if manifest.CommitTreeSHA != "" {
+		if !validObjectID(manifest.CommitTreeSHA) {
+			return errors.New("commit tree SHA must be a full lowercase Git object ID")
+		}
+		if manifest.Phase != PhasePullRequest && manifest.Phase != PhaseDone {
+			return errors.New("commit tree SHA is only valid during pull_request or done")
+		}
+	}
+	if manifest.CommitSHA != "" {
+		if !validObjectID(manifest.CommitSHA) {
+			return errors.New("commit SHA must be a full lowercase Git object ID")
+		}
+		if manifest.Phase != PhasePullRequest && manifest.Phase != PhaseDone {
+			return errors.New("commit SHA is only valid during pull_request or done")
+		}
+		if manifest.CommitTreeSHA == "" {
+			return errors.New("commit SHA requires a recorded commit tree SHA")
 		}
 	}
 	if manifest.Status == StatusDone && manifest.PullRequest == nil {

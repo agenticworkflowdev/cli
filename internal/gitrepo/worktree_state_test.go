@@ -95,6 +95,80 @@ func TestWorktreeInspectorDetectsTrackedAndUntrackedMutations(t *testing.T) {
 	}
 }
 
+func TestWorktreeInspectorDetectsIndexOnlyMutation(t *testing.T) {
+	root := newSnapshotRepository(t)
+	writeWorktreeFile(t, root, "tracked.txt", "approved change\n", 0o644)
+	inspector := gitrepo.NewWorktreeInspector("git", processrun.NewRunner())
+	baseline, err := inspector.Capture(context.Background(), root)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	runGit(t, root, "add", "tracked.txt")
+	changed, err := inspector.Inspect(context.Background(), root, baseline)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if want := []string{".git"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+}
+
+func TestWorktreeInspectorDetectsRefOnlyMutation(t *testing.T) {
+	root := newSnapshotRepository(t)
+	inspector := gitrepo.NewWorktreeInspector("git", processrun.NewRunner())
+	baseline, err := inspector.Capture(context.Background(), root)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	runGit(t, root, "commit", "--quiet", "--allow-empty", "-m", "unexpected ref advance")
+	changed, err := inspector.Inspect(context.Background(), root, baseline)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if want := []string{".git"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+}
+
+func TestWorktreeInspectorDetectsAssumeUnchangedIndexFlag(t *testing.T) {
+	root := newSnapshotRepository(t)
+	writeWorktreeFile(t, root, "tracked.txt", "approved change\n", 0o644)
+	inspector := gitrepo.NewWorktreeInspector("git", processrun.NewRunner())
+	baseline, err := inspector.Capture(context.Background(), root)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	runGit(t, root, "update-index", "--assume-unchanged", "tracked.txt")
+	changed, err := inspector.Inspect(context.Background(), root, baseline)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if want := []string{".git"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+}
+
+func TestWorktreeInspectorDetectsSkipWorktreeIndexFlag(t *testing.T) {
+	root := newSnapshotRepository(t)
+	inspector := gitrepo.NewWorktreeInspector("git", processrun.NewRunner())
+	baseline, err := inspector.Capture(context.Background(), root)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	runGit(t, root, "update-index", "--skip-worktree", "tracked.txt")
+	changed, err := inspector.Inspect(context.Background(), root, baseline)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if want := []string{".git"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+}
+
 func newSnapshotRepository(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

@@ -73,6 +73,13 @@ func NewCommand() *cobra.Command {
 			}
 			return runtime.resume.ResumeGitHub(ctx, controllerRoot, issueNumber)
 		},
+		RetryGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, progress cli.ProgressReporter) (workflow.PublicationResult, error) {
+			runtime, err := buildRuntime(controllerRoot, progress)
+			if err != nil {
+				return workflow.PublicationResult{}, err
+			}
+			return runtime.retry.RetryGitHub(ctx, controllerRoot, issueNumber)
+		},
 		StatusGitHub: statusService.StatusGitHub,
 		Execute: func(_ context.Context, operation cli.Operation, item cli.SourceItem, _ string) error {
 			return fmt.Errorf("awdev %s %s is not implemented yet", operation, item.Source)
@@ -83,6 +90,7 @@ func NewCommand() *cobra.Command {
 type workflowRuntime struct {
 	run    *workflow.RunService
 	resume *workflow.ResumeService
+	retry  *workflow.RetryService
 }
 
 func newWorkflowRuntime(
@@ -166,14 +174,20 @@ func newWorkflowRuntime(
 	)
 	blockers := workflow.NewBlockerService(manifestStore, transitionService, githubClient, time.Now)
 	continuation := workflow.NewResumeContinuationService(specificationService, implementationService, reviewService)
+	publication := workflow.NewPublicationService(
+		manifestStore, transitionService, manifestStore, checks.NewExecutor(processRunner), gitrepo.NewWorktreeInspector("git", processRunner),
+		gitrepo.NewPublicationManager("git", processRunner), githubClient, configuration.Checks,
+	)
+	runService := workflow.NewRunService(
+		state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
+		state.NewWorkflowID, reportingSpecification, implementationService, reviewService, blockers,
+	).WithFinalizer(publication)
+	resumeService := workflow.NewResumeService(
+		state.NewFileLocker(), manifestReader, transitionService, githubClient, blockers, continuation,
+	).WithFinalizer(publication)
 	return workflowRuntime{
-		run: workflow.NewRunService(
-			state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
-			state.NewWorkflowID, reportingSpecification, implementationService, reviewService, blockers,
-		),
-		resume: workflow.NewResumeService(
-			state.NewFileLocker(), manifestReader, transitionService, githubClient, blockers, continuation,
-		),
+		run: runService, resume: resumeService,
+		retry: workflow.NewRetryService(state.NewFileLocker(), manifestReader, publication),
 	}, nil
 }
 

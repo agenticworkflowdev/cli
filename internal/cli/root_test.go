@@ -558,6 +558,39 @@ func TestResumeGitHubRendersWaitingAndContinuedResults(t *testing.T) {
 	}
 }
 
+func TestRetryGitHubRendersCompletedPullRequest(t *testing.T) {
+	var output bytes.Buffer
+	manifest := state.Manifest{
+		WorkflowID: cliTestWorkflowID, Phase: state.PhaseDone, Status: state.StatusDone,
+		PullRequest: &state.PullRequest{Number: 23, URL: "https://github.com/owner/repository/pull/23"},
+	}
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		RetryGitHub: func(_ context.Context, root string, number int, progress cli.ProgressReporter) (workflow.PublicationResult, error) {
+			if root != "/repo" || number != 17 || progress == nil {
+				t.Fatalf("retry inputs = %q, %d, %v", root, number, progress)
+			}
+			return workflow.PublicationResult{Manifest: manifest}, nil
+		},
+		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
+			t.Fatal("generic operation invoked instead of GitHub retry service")
+			return nil
+		},
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(&output)
+	command.SetArgs([]string{"retry", "github", "17"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("retry command: %v", err)
+	}
+	want := "Workflow " + cliTestWorkflowID + " completed.\nPull request: https://github.com/owner/repository/pull/23\n"
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
 func TestStatusGitHubRendersEveryWorkflowCondition(t *testing.T) {
 	tests := []struct {
 		name  string

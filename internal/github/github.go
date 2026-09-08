@@ -64,6 +64,25 @@ type IssueComment struct {
 	CreatedAt time.Time
 }
 
+// PullRequest is the identity-bearing subset used to reconcile publication.
+type PullRequest struct {
+	Number    int
+	URL       string
+	Head      string
+	HeadOwner string
+	Base      string
+	State     string
+}
+
+// CreatePullRequestRequest contains every explicit input to PR creation.
+type CreatePullRequestRequest struct {
+	Repository string
+	Head       string
+	Base       string
+	Title      string
+	Body       string
+}
+
 // Snapshot contains all GitHub data required by later bootstrap slices.
 type Snapshot struct {
 	Repository Repository
@@ -286,6 +305,60 @@ func (client *Client) PostIssueComment(ctx context.Context, controllerRoot, repo
 	return nil
 }
 
+// ListPullRequests queries every state for one exact repository head branch.
+func (client *Client) ListPullRequests(ctx context.Context, controllerRoot, repository, head string) ([]PullRequest, error) {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return nil, errors.New("GitHub client is not fully configured")
+	}
+	if !validRepositoryIdentity(repository) || !validBranchName(head) {
+		return nil, errors.New("GitHub pull request identity is malformed")
+	}
+	output, err := client.run(
+		ctx, controllerRoot,
+		"pr", "list", "--repo", repository, "--head", head, "--state", "all",
+		"--json", "number,url,headRefName,headRepositoryOwner,baseRefName,state",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list GitHub pull requests: %w", err)
+	}
+	var raw []rawPullRequest
+	if err := decodeStrict(output, &raw); err != nil {
+		return nil, fmt.Errorf("decode GitHub pull requests: %w", err)
+	}
+	result := make([]PullRequest, 0, len(raw))
+	for index, item := range raw {
+		pullRequest, err := item.pullRequest()
+		if err != nil {
+			return nil, fmt.Errorf("decode GitHub pull request %d: %w", index, err)
+		}
+		result = append(result, pullRequest)
+	}
+	return result, nil
+}
+
+// CreatePullRequest creates one PR non-interactively and sends its body only
+// through stdin. gh prints the created PR URL on success.
+func (client *Client) CreatePullRequest(ctx context.Context, controllerRoot string, request CreatePullRequestRequest) (PullRequest, error) {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return PullRequest{}, errors.New("GitHub client is not fully configured")
+	}
+	if !validRepositoryIdentity(request.Repository) || !validBranchName(request.Head) || !validBranchName(request.Base) {
+		return PullRequest{}, errors.New("GitHub pull request identity is malformed")
+	}
+	if invalidRequiredText(request.Title) || strings.TrimSpace(request.Body) == "" {
+		return PullRequest{}, errors.New("GitHub pull request title and body are required")
+	}
+	output, err := client.runWithStdin(
+		ctx, controllerRoot, []byte(request.Body),
+		"pr", "create", "--repo", request.Repository, "--head", request.Head, "--base", request.Base,
+		"--title", request.Title, "--body-file", "-",
+	)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("create GitHub pull request: %w", err)
+	}
+	return pullRequestFromURL(strings.TrimSpace(string(output)), request)
+}
+
 func (client *Client) run(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
 	return client.runWithStdin(ctx, directory, nil, arguments...)
 }
@@ -388,6 +461,52 @@ type rawIssueComment struct {
 	} `json:"user"`
 	Body      *string `json:"body"`
 	CreatedAt *string `json:"created_at"`
+}
+
+type rawPullRequest struct {
+	Number    *int    `json:"number"`
+	URL       *string `json:"url"`
+	Head      *string `json:"headRefName"`
+	HeadOwner *struct {
+		Login *string `json:"login"`
+	} `json:"headRepositoryOwner"`
+	Base  *string `json:"baseRefName"`
+	State *string `json:"state"`
+}
+
+func (raw rawPullRequest) pullRequest() (PullRequest, error) {
+	if raw.Number == nil || raw.URL == nil || raw.Head == nil || raw.HeadOwner == nil || raw.HeadOwner.Login == nil || raw.Base == nil || raw.State == nil {
+		return PullRequest{}, errors.New("response is missing required fields")
+	}
+	result := PullRequest{Number: *raw.Number, URL: *raw.URL, Head: *raw.Head, HeadOwner: *raw.HeadOwner.Login, Base: *raw.Base, State: *raw.State}
+	if result.Number <= 0 || !validBranchName(result.Head) || !validIdentityPart(result.HeadOwner) || !validBranchName(result.Base) || (result.State != "OPEN" && result.State != "CLOSED" && result.State != "MERGED") {
+		return PullRequest{}, errors.New("response contains malformed identity fields")
+	}
+	wantSuffix := "/pull/" + strconv.Itoa(result.Number)
+	parsed, err := url.Parse(result.URL)
+	// Repository matching is enforced by the workflow, where the expected
+	// repository is available. Keep parsing here bounded to canonical GitHub URLs.
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "github.com" || !strings.HasSuffix(parsed.Path, wantSuffix) || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return PullRequest{}, errors.New("response contains malformed URL")
+	}
+	return result, nil
+}
+
+func pullRequestFromURL(value string, request CreatePullRequestRequest) (PullRequest, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "github.com" {
+		return PullRequest{}, errors.New("GitHub pull request creation returned a malformed URL")
+	}
+	prefix := "/" + request.Repository + "/pull/"
+	if !strings.HasPrefix(parsed.Path, prefix) || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return PullRequest{}, errors.New("GitHub pull request creation returned a mismatched URL")
+	}
+	number, err := strconv.Atoi(strings.TrimPrefix(parsed.Path, prefix))
+	if err != nil || number <= 0 {
+		return PullRequest{}, errors.New("GitHub pull request creation returned a malformed number")
+	}
+	owner, _, _ := strings.Cut(request.Repository, "/")
+	return PullRequest{Number: number, URL: value, Head: request.Head, HeadOwner: owner, Base: request.Base, State: "OPEN"}, nil
 }
 
 func (raw rawIssueComment) comment() IssueComment {

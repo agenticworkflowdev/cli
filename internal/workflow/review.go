@@ -25,6 +25,7 @@ type ReviewResult struct {
 	CheckResults []checks.Result
 	Evidence     *review.Result
 	Blocker      *BlockerRequest
+	CheckedState gitrepo.WorktreeBaseline
 }
 
 // ReviewFailure retains bounded check evidence for private diagnostics.
@@ -217,6 +218,7 @@ func (service *ReviewService) reviewLoop(ctx context.Context, controllerRoot, ou
 		persisted := cloneReviewResult(evidence)
 		result.Evidence = &persisted
 		if evidence.Approved {
+			result.CheckedState = checkedState
 			return result, nil
 		}
 		if result.Manifest.Review.Attempt >= result.Manifest.Review.MaxAttempts {

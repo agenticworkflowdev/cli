@@ -37,6 +37,7 @@ type ResumeResult struct {
 	Specification  *SpecificationResult
 	Implementation *ImplementationResult
 	Review         *ReviewResult
+	Publication    *PublicationResult
 }
 
 // ResumePhaseContinuation starts a fresh typed agent run for the phase that
@@ -55,6 +56,13 @@ type ResumeService struct {
 	comments     IssueCommentReader
 	publisher    BlockerPublisher
 	continuation ResumePhaseContinuation
+	finalizer    Finalizer
+}
+
+// WithFinalizer installs terminal publication after a resumed review passes.
+func (service *ResumeService) WithFinalizer(finalizer Finalizer) *ResumeService {
+	service.finalizer = finalizer
+	return service
 }
 
 // NewResumeService constructs GitHub resume orchestration.
@@ -146,6 +154,17 @@ func (service *ResumeService) ResumeGitHub(ctx context.Context, controllerRoot s
 		}
 		published, publishErr := service.publisher.Publish(ctx, controllerRoot, current.WorkflowID, *continued.Blocker)
 		result.Manifest = published
+		return result, publishErr
+	}
+	if service.finalizer != nil {
+		if result.Review == nil {
+			return result, errors.New("resumed workflow reached publication without review evidence")
+		}
+		publication, publishErr := service.finalizer.Finalize(ctx, controllerRoot, current.WorkflowID, result.Review.CheckedState)
+		if publication.Manifest.WorkflowID != "" {
+			result.Manifest = publication.Manifest
+		}
+		result.Publication = &publication
 		return result, publishErr
 	}
 	return result, nil
