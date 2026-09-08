@@ -18,6 +18,7 @@ func TestManifestReaderRecognizesSupportedExistingStatuses(t *testing.T) {
 			manifest.Status = state.Status(status)
 			switch manifest.Status {
 			case state.StatusBlocked:
+				manifest.BlockerSequence = 1
 				manifest.Blocker = publishedBlocker(state.PhaseImplementation)
 			case state.StatusFailed:
 				manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "failure"}

@@ -64,6 +64,37 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	}
 }
 
+func TestImplementationResumeUsesFreshTypedPromptBeforeRunningAllChecks(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := implementationManifest(t)
+	manifest.Phase = state.PhaseImplementation
+	manifest.BlockerSequence = 1
+	manifest.Blocker = answeredBlocker(state.PhaseImplementation)
+	stateStore := &implementationState{manifest: manifest, events: &events}
+	resumePrompt := &implementationPrompt{label: "resume", rendered: "resume prompt", events: &events}
+	agentRunner := &implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"continued"}`), SessionID: "fresh-thread"}}}}
+	service := workflow.NewImplementationService(
+		stateStore, stateStore,
+		&implementationPrompt{label: "implement", events: &events},
+		&implementationPrompt{label: "repair", events: &events},
+		agentRunner, &implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "continued"}}},
+		&implementationChecks{events: &events, results: [][]checks.Result{{{Name: "tests", ExitCode: 0}}}},
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+		[]checks.Definition{{Name: "tests", Command: []string{"go", "test"}, Timeout: time.Minute}}, nil, resumePrompt,
+	)
+
+	result, err := service.Resume(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("resume implementation: %v", err)
+	}
+	if !reflect.DeepEqual(result.SessionIDs, []string{"fresh-thread"}) || agentRunner.requests[0].Prompt != "resume prompt" || len(result.CheckResults) != 1 {
+		t.Fatalf("result=%#v requests=%#v", result, agentRunner.requests)
+	}
+	if resumePrompt.data.Blocker == nil || resumePrompt.data.Blocker.Answer != "Use option A" || resumePrompt.data.Blocker.Question != "Which behavior?" {
+		t.Fatalf("resume prompt blocker data = %#v", resumePrompt.data.Blocker)
+	}
+}
+
 func TestImplementationDoesNotTrustChecksThatMutateTheWorktree(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)

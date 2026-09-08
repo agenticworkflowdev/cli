@@ -14,6 +14,7 @@ import (
 	githubapi "github.com/agenticworkflowdev/cli/internal/github"
 	"github.com/agenticworkflowdev/cli/internal/gitrepo"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	reviewapi "github.com/agenticworkflowdev/cli/internal/review"
 	"github.com/agenticworkflowdev/cli/internal/state"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 )
@@ -429,6 +430,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 					Worktree:          ".awdev/worktrees/gh-17-a-title",
 					SpecificationPath: ".awdev/specs/gh-17-a-title.md",
 				},
+				Review: &workflow.ReviewResult{Evidence: &reviewapi.Result{Approved: true, Findings: []reviewapi.Finding{}}},
 			}, nil
 		},
 		Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
@@ -442,7 +444,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	if got, want := output.String(), "GitHub issue: #17\nWorktree: .awdev/worktrees/gh-17-a-title\nBranch: gh-17-a-title\nSpecification: .awdev/specs/gh-17-a-title.md\n"; got != want {
+	if got, want := output.String(), "GitHub issue: #17\nWorktree: .awdev/worktrees/gh-17-a-title\nBranch: gh-17-a-title\nSpecification: .awdev/specs/gh-17-a-title.md\nReview: passed\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
@@ -498,6 +500,61 @@ func TestRunGitHubProvidesAVisibleProgressWriterToTheService(t *testing.T) {
 	command.SetArgs([]string{"run", "github", "17"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("run command: %v", err)
+	}
+}
+
+func TestResumeGitHubRendersWaitingAndContinuedResults(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result workflow.ResumeResult
+		want   string
+	}{
+		{
+			name: "waiting",
+			result: workflow.ResumeResult{Outcome: workflow.ResumeWaiting, Manifest: state.Manifest{
+				WorkflowID: cliTestWorkflowID,
+				Blocker:    &state.Blocker{Comment: &state.SourceReference{URL: "https://github.com/owner/repository/issues/17#issuecomment-100"}},
+			}},
+			want: "Workflow " + cliTestWorkflowID + " is still waiting for a reply: https://github.com/owner/repository/issues/17#issuecomment-100\n",
+		},
+		{
+			name: "continued",
+			result: workflow.ResumeResult{
+				Outcome:  workflow.ResumeContinued,
+				Manifest: state.Manifest{WorkflowID: cliTestWorkflowID, Phase: state.PhaseReview, Status: state.StatusRunning},
+				Answer:   &state.BlockerAnswer{URL: "https://github.com/owner/repository/issues/17#issuecomment-101"},
+				Review:   &workflow.ReviewResult{Evidence: &reviewapi.Result{Approved: true, Findings: []reviewapi.Finding{}}},
+			},
+			want: "Workflow " + cliTestWorkflowID + " resumed from https://github.com/owner/repository/issues/17#issuecomment-101.\nPhase: review\nStatus: running\nReview: passed\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			services := cli.Services{
+				WorkingDirectory: func() (string, error) { return "/repo", nil },
+				DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+				ValidateConfig:   func(string) error { return nil },
+				ResumeGitHub: func(_ context.Context, root string, number int, progress cli.ProgressReporter) (workflow.ResumeResult, error) {
+					if root != "/repo" || number != 17 || progress == nil {
+						t.Fatalf("resume inputs = %q, %d, %v", root, number, progress)
+					}
+					return test.result, nil
+				},
+				Execute: func(context.Context, cli.Operation, cli.SourceItem, string) error {
+					t.Fatal("generic operation invoked instead of GitHub resume service")
+					return nil
+				},
+			}
+			command := cli.NewRootCommand(services)
+			command.SetOut(&output)
+			command.SetArgs([]string{"resume", "github", "17"})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("resume command: %v", err)
+			}
+			if output.String() != test.want {
+				t.Fatalf("output = %q, want %q", output.String(), test.want)
+			}
+		})
 	}
 }
 

@@ -93,6 +93,36 @@ func TestSpecificationPhaseReturnsTypedBlockerWithoutMisclassifyingItAsFailure(t
 	}
 }
 
+func TestSpecificationResumeUsesFreshTypedBlockerPromptAndVerifiesSpecification(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := specificationManifest(t)
+	manifest.Phase = state.PhaseSpec
+	manifest.BlockerSequence = 1
+	manifest.Blocker = answeredBlocker(state.PhaseSpec)
+	stateStore := &specificationState{manifest: manifest, events: &events}
+	resumePrompt := &specificationPrompt{events: &events, rendered: "resume prompt"}
+	runner := &specificationAgent{events: &events, run: func(request agent.Request) (agent.RunResult, error) {
+		writeSpecification(t, controllerRoot, manifest, []byte("# Specification\n"))
+		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "fresh-thread"}, nil
+	}}
+	service := workflow.NewSpecificationService(
+		stateStore, stateStore, &specificationPrompt{events: &events}, runner,
+		&specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeCompleted, Summary: "done"}},
+		filepath.Join(t.TempDir(), "schema.json"), time.Minute, resumePrompt,
+	)
+
+	result, err := service.Resume(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("resume specification: %v", err)
+	}
+	if result.SessionID != "fresh-thread" || result.Manifest.SpecificationPath == "" || runner.request.Prompt != "resume prompt" {
+		t.Fatalf("result=%#v request=%#v", result, runner.request)
+	}
+	if resumePrompt.data.Blocker == nil || resumePrompt.data.Blocker.Question != manifest.Blocker.Question || resumePrompt.data.Blocker.Answer != manifest.Blocker.Answer.Body {
+		t.Fatalf("resume prompt blocker data = %#v", resumePrompt.data.Blocker)
+	}
+}
+
 func TestSpecificationPhaseRejectsUnsafeOrMissingSpecificationPostconditions(t *testing.T) {
 	setups := map[string]func(*testing.T, string, state.Manifest){
 		"missing": func(*testing.T, string, state.Manifest) {},

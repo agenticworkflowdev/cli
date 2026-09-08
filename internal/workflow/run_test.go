@@ -76,6 +76,7 @@ func TestRunGitHubDoesNotImplementABlockedSpecification(t *testing.T) {
 		&fakeSpecificationCreator{events: &events, writer: writer, blocker: &workflow.BlockerRequest{Phase: state.PhaseSpec, Question: "Which API?"}},
 		implementation,
 		&fakeReviewer{events: &events, writer: writer},
+		&fakeBlockerPublisher{events: &events, writer: writer},
 	)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
@@ -84,6 +85,9 @@ func TestRunGitHubDoesNotImplementABlockedSpecification(t *testing.T) {
 	}
 	if result.Specification == nil || result.Specification.Blocker == nil || implementation.called {
 		t.Fatalf("result = %#v, implementation called = %v", result, implementation.called)
+	}
+	if result.Manifest == nil || result.Manifest.Status != state.StatusBlocked || result.Manifest.Blocker == nil || result.Manifest.Blocker.Comment == nil {
+		t.Fatalf("blocker was not published: %#v", result.Manifest)
 	}
 }
 
@@ -100,6 +104,7 @@ func TestRunGitHubDoesNotReviewABlockedImplementation(t *testing.T) {
 		fakeFetcher{events: &events, snapshot: validSnapshot()},
 		&fakeBootstrapper{events: &events, result: gitrepo.Worktree{Branch: "gh-17-a-title", BaseSHA: strings.Repeat("a", 40), AbsolutePath: "/repo/.awdev/worktrees/gh-17-a-title"}},
 		writer, generateFixedWorkflowID, &fakeSpecificationCreator{events: &events, writer: writer}, implementation, reviewer,
+		&fakeBlockerPublisher{events: &events, writer: writer},
 	)
 
 	result, err := service.RunGitHub(context.Background(), "/repo", 17)
@@ -108,6 +113,38 @@ func TestRunGitHubDoesNotReviewABlockedImplementation(t *testing.T) {
 	}
 	if result.Implementation == nil || result.Implementation.Blocker == nil || reviewer.called || result.Review != nil {
 		t.Fatalf("result = %#v, reviewer called = %t", result, reviewer.called)
+	}
+	if result.Manifest == nil || result.Manifest.Status != state.StatusBlocked {
+		t.Fatalf("implementation blocker was not published: %#v", result.Manifest)
+	}
+}
+
+func TestRunGitHubReconcilesPendingBlockerIntentAfterReentry(t *testing.T) {
+	events := []string{}
+	pending := state.Manifest{
+		WorkflowID: fixedWorkflowID, Phase: state.PhaseSpec, Status: state.StatusRunning,
+		Blocker: &state.Blocker{Phase: state.PhaseSpec, Question: "Which API?"},
+	}
+	blocked := pending
+	blocked.Status = state.StatusBlocked
+	publisher := &fakeBlockerPublisher{events: &events, result: &blocked}
+	service := workflow.NewRunService(
+		fakeLocker{events: &events, lock: &fakeLock{events: &events}},
+		&sequenceExisting{events: &events, workflows: []state.ExistingWorkflow{{Exists: true, Manifest: &pending}, {Exists: true, Manifest: &pending}}},
+		fakeFetcher{events: &events, err: errors.New("must not fetch")}, &fakeBootstrapper{events: &events},
+		&fakeManifestWriter{events: &events}, generateFixedWorkflowID,
+		&fakeSpecificationCreator{events: &events}, &fakeImplementationRunner{events: &events}, &fakeReviewer{events: &events}, publisher,
+	)
+
+	result, err := service.RunGitHub(context.Background(), "/repo", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != workflow.RunExisting || result.Existing.Manifest == nil || result.Existing.Manifest.Status != state.StatusBlocked {
+		t.Fatalf("result = %#v", result)
+	}
+	if want := []string{"state:17", "lock:gh-17", "state:17", "blocker", "unlock"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
 
@@ -421,6 +458,32 @@ type fakeReviewer struct {
 	called bool
 	result workflow.ReviewResult
 	err    error
+}
+
+type fakeBlockerPublisher struct {
+	events *[]string
+	writer *fakeManifestWriter
+	result *state.Manifest
+}
+
+func (publisher *fakeBlockerPublisher) Publish(_ context.Context, _ string, _ string, blocker workflow.BlockerRequest) (state.Manifest, error) {
+	*publisher.events = append(*publisher.events, "blocker")
+	manifest := state.Manifest{}
+	if publisher.result != nil {
+		manifest = *publisher.result
+	} else {
+		manifest = publisher.writer.manifest
+	}
+	manifest.Phase = blocker.Phase
+	manifest.Status = state.StatusBlocked
+	manifest.BlockerSequence++
+	id := state.BlockerID(manifest.BlockerSequence)
+	manifest.Blocker = &state.Blocker{
+		ID: id, Phase: blocker.Phase, Question: blocker.Question, Actor: manifest.Actor,
+		Marker: state.BlockerMarker(manifest.WorkflowID, id), CreatedAt: time.Now(),
+		Comment: &state.SourceReference{ID: "101", URL: "https://github.com/owner/repository/issues/17#issuecomment-101"},
+	}
+	return manifest, nil
 }
 
 func (runner *fakeImplementationRunner) Implement(_ context.Context, _ string, workflowID string) (workflow.ImplementationResult, error) {

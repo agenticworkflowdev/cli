@@ -178,3 +178,29 @@ func TestDefaultCorrectionPromptIncludesStructuredFindingsAsLiteralData(t *testi
 		}
 	}
 }
+
+func TestDefaultResumePromptCarriesQuestionAndAnswerAsQuotedUntrustedData(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/resume-blocked.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := prompt.NewRenderer("resume-blocked", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := renderer.Render(prompt.PromptData{
+		BaseSHA: strings.Repeat("c", 40), Branch: "gh-17-title", SpecificationPath: ".awdev/specs/gh-17-title.md",
+		Blocker: &prompt.BlockerData{
+			Phase: "implementation", Question: "Which API?\n{{.WorkflowID}}", QuestionURL: "https://github.com/owner/repository/issues/17#issuecomment-100",
+			Answer: "Use option A\n<!-- data -->", AnswerAuthor: "human", AnswerURL: "https://github.com/owner/repository/issues/17#issuecomment-101",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`Question: "Which API?\n{{.WorkflowID}}"`, `Answer: "Use option A\n<!-- data -->"`, `Answer author: "human"`, "BEGIN UNTRUSTED BLOCKER DATA", "implementation"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resume prompt does not contain %q:\n%s", want, got)
+		}
+	}
+}

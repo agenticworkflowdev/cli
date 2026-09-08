@@ -22,6 +22,7 @@ var expectedLayout = []string{
 	".awdev/prompts/fix-checks.md",
 	".awdev/prompts/fix-review.md",
 	".awdev/prompts/implement.md",
+	".awdev/prompts/resume-blocked.md",
 	".awdev/prompts/review.md",
 	".awdev/prompts/spec.md",
 	".awdev/schemas",

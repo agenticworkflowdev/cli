@@ -268,6 +268,7 @@ func TestManifestValidationAcceptsEverySupportedPhaseStatusCombination(t *testin
 				manifest.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
 			}
 			if test.status == state.StatusBlocked {
+				manifest.BlockerSequence = 1
 				manifest.Blocker = publishedBlocker(test.phase)
 			}
 			if test.status == state.StatusFailed {
@@ -285,10 +286,9 @@ func TestManifestValidationAcceptsEverySupportedPhaseStatusCombination(t *testin
 
 func publishedBlocker(phase state.Phase) *state.Blocker {
 	return &state.Blocker{
-		ID:       "blocker-1",
-		Phase:    phase,
-		Question: "Which behavior should be used?",
-		Comment:  &state.SourceReference{ID: "123", URL: "https://github.com/owner/repository/issues/17#issuecomment-123"},
+		ID: "blocker-1", Phase: phase, Question: "Which behavior should be used?", Actor: "octocat",
+		Marker: state.BlockerMarker("wf_0123456789abcdef0123456789abcdef", "blocker-1"), CreatedAt: time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC),
+		Comment: &state.SourceReference{ID: "123", URL: "https://github.com/owner/repository/issues/17#issuecomment-123"},
 	}
 }
 

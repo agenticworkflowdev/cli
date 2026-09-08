@@ -21,13 +21,19 @@ const (
 	stderrLimit = 64 << 10
 )
 
+// AccountType is GitHub's classification for an account that authored a
+// comment.
+type AccountType string
+
+const CommentAuthorTypeUser AccountType = "User"
+
 // Repository identifies the selected GitHub repository and its default branch.
 type Repository struct {
 	NameWithOwner string
 	DefaultBranch string
 }
 
-// Actor is the authenticated GitHub user performing workflow actions.
+// Actor is the authenticated GitHub user or App performing workflow actions.
 type Actor struct {
 	Login string
 }
@@ -40,6 +46,22 @@ type Issue struct {
 	URL       string
 	State     string
 	UpdatedAt time.Time
+}
+
+// CommentAuthor identifies the account that authored an issue comment.
+type CommentAuthor struct {
+	Login string
+	Type  AccountType
+}
+
+// IssueComment is the stable, typed subset of a GitHub issue comment used by
+// blocker publication and resume selection.
+type IssueComment struct {
+	ID        string
+	URL       string
+	Author    CommentAuthor
+	Body      string
+	CreatedAt time.Time
 }
 
 // Snapshot contains all GitHub data required by later bootstrap slices.
@@ -101,7 +123,9 @@ type Client struct {
 	runner processrun.Runner
 }
 
-// NewClient creates a GitHub client.
+// NewClient creates a GitHub client. Authentication remains owned by gh; a
+// caller can select a GitHub App installation identity with the standard
+// GH_TOKEN environment variable without persisting that token in AWDev state.
 func NewClient(binary string, runner processrun.Runner) *Client {
 	return &Client{binary: binary, runner: runner}
 }
@@ -124,11 +148,7 @@ func (client *Client) Fetch(ctx context.Context, controllerRoot string, issueNum
 		return Snapshot{}, err
 	}
 
-	actorOutput, err := client.run(ctx, controllerRoot, "api", "user", "--jq", "{login: .login}")
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("resolve authenticated GitHub actor: %w", err)
-	}
-	actor, err := decodeActor(actorOutput)
+	actor, err := client.AuthenticatedActor(ctx, controllerRoot)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -155,6 +175,23 @@ func (client *Client) Fetch(ctx context.Context, controllerRoot string, issueNum
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// AuthenticatedActor resolves the user or GitHub App installation identity
+// selected by gh authentication.
+func (client *Client) AuthenticatedActor(ctx context.Context, controllerRoot string) (Actor, error) {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return Actor{}, errors.New("GitHub client is not fully configured")
+	}
+	actorOutput, err := client.run(ctx, controllerRoot, "api", "graphql", "-f", "query=query { viewer { login } }")
+	if err != nil {
+		return Actor{}, fmt.Errorf("resolve authenticated GitHub actor: %w", err)
+	}
+	actor, err := decodeActor(actorOutput)
+	if err != nil {
+		return Actor{}, err
+	}
+	return actor, nil
 }
 
 // IssueUpdatedAt reads the live issue timestamp without changing workflow input.
@@ -191,10 +228,73 @@ func (client *Client) IssueUpdatedAt(ctx context.Context, controllerRoot, reposi
 	return updatedAt, nil
 }
 
+// ListIssueComments fetches every issue comment page in one bounded gh
+// invocation. Individual malformed comments are retained as zero-value fields
+// so the application service can ignore them without losing valid siblings.
+func (client *Client) ListIssueComments(ctx context.Context, controllerRoot, repository string, issueNumber int) ([]IssueComment, error) {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return nil, errors.New("GitHub client is not fully configured")
+	}
+	if !validRepositoryIdentity(repository) || issueNumber <= 0 {
+		return nil, errors.New("GitHub issue identity is malformed")
+	}
+	endpoint := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", repository, issueNumber)
+	output, err := client.run(ctx, controllerRoot, "api", "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("list GitHub issue comments: %w", err)
+	}
+	var pages [][]rawIssueComment
+	decoder := json.NewDecoder(strings.NewReader(string(output)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&pages); err != nil {
+		return nil, fmt.Errorf("decode GitHub issue comments: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("decode GitHub issue comments: expected one JSON value")
+	}
+	comments := make([]IssueComment, 0)
+	for _, page := range pages {
+		for _, raw := range page {
+			comments = append(comments, raw.comment())
+		}
+	}
+	return comments, nil
+}
+
+// PostIssueComment sends the complete untrusted body through stdin. The body
+// is never included in argv, where it could be interpreted as an option.
+func (client *Client) PostIssueComment(ctx context.Context, controllerRoot, repository string, issueNumber int, body string) error {
+	if client.runner == nil || strings.TrimSpace(client.binary) == "" {
+		return errors.New("GitHub client is not fully configured")
+	}
+	if !validRepositoryIdentity(repository) || issueNumber <= 0 {
+		return errors.New("GitHub issue identity is malformed")
+	}
+	if strings.TrimSpace(body) == "" {
+		return errors.New("GitHub issue comment body is empty")
+	}
+	_, err := client.runWithStdin(
+		ctx,
+		controllerRoot,
+		[]byte(body),
+		"issue", "comment", strconv.Itoa(issueNumber), "--repo", repository, "--body-file", "-",
+	)
+	if err != nil {
+		return fmt.Errorf("post GitHub issue comment: %w", err)
+	}
+	return nil
+}
+
 func (client *Client) run(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
+	return client.runWithStdin(ctx, directory, nil, arguments...)
+}
+
+func (client *Client) runWithStdin(ctx context.Context, directory string, stdin []byte, arguments ...string) ([]byte, error) {
 	request := processrun.Request{
 		Directory: directory,
 		Argv:      append([]string{client.binary}, arguments...),
+		Stdin:     append([]byte(nil), stdin...),
 		Environment: map[string]string{
 			"GH_PROMPT_DISABLED": "1",
 			"NO_COLOR":           "1",
@@ -248,7 +348,11 @@ func decodeRepository(contents []byte) (Repository, error) {
 }
 
 type rawActor struct {
-	Login *string `json:"login"`
+	Data *struct {
+		Viewer *struct {
+			Login *string `json:"login"`
+		} `json:"viewer"`
+	} `json:"data"`
 }
 
 func decodeActor(contents []byte) (Actor, error) {
@@ -256,10 +360,10 @@ func decodeActor(contents []byte) (Actor, error) {
 	if err := decodeStrict(contents, &raw); err != nil {
 		return Actor{}, fmt.Errorf("decode authenticated GitHub actor: %w", err)
 	}
-	if raw.Login == nil {
+	if raw.Data == nil || raw.Data.Viewer == nil || raw.Data.Viewer.Login == nil {
 		return Actor{}, errors.New("authenticated GitHub actor response is missing login")
 	}
-	actor := Actor{Login: *raw.Login}
+	actor := Actor{Login: *raw.Data.Viewer.Login}
 	if invalidRequiredText(actor.Login) {
 		return Actor{}, errors.New("authenticated GitHub actor login is malformed")
 	}
@@ -273,6 +377,42 @@ type rawIssue struct {
 	URL       *string `json:"url"`
 	State     *string `json:"state"`
 	UpdatedAt *string `json:"updatedAt"`
+}
+
+type rawIssueComment struct {
+	ID     *json.Number `json:"id"`
+	URL    *string      `json:"html_url"`
+	Author *struct {
+		Login *string `json:"login"`
+		Type  *string `json:"type"`
+	} `json:"user"`
+	Body      *string `json:"body"`
+	CreatedAt *string `json:"created_at"`
+}
+
+func (raw rawIssueComment) comment() IssueComment {
+	var comment IssueComment
+	if raw.ID != nil {
+		comment.ID = raw.ID.String()
+	}
+	if raw.URL != nil {
+		comment.URL = *raw.URL
+	}
+	if raw.Author != nil {
+		if raw.Author.Login != nil {
+			comment.Author.Login = *raw.Author.Login
+		}
+		if raw.Author.Type != nil {
+			comment.Author.Type = AccountType(*raw.Author.Type)
+		}
+	}
+	if raw.Body != nil {
+		comment.Body = *raw.Body
+	}
+	if raw.CreatedAt != nil {
+		comment.CreatedAt, _ = time.Parse(time.RFC3339, *raw.CreatedAt)
+	}
+	return comment
 }
 
 func decodeIssue(contents []byte) (Issue, error) {

@@ -49,6 +49,20 @@ func TestReviewImmediatelyApprovesTheCheckedDiff(t *testing.T) {
 	}
 }
 
+func TestReviewRetryAfterResumedCorrectionPreservesAttemptCounter(t *testing.T) {
+	fixture := newReviewFixture(t, 3)
+	fixture.state.manifest.Review = &state.ReviewCounters{Attempt: 2, MaxAttempts: 3}
+	fixture.reviewDecoder.results = []review.Result{{Approved: true, Findings: []review.Finding{}}}
+
+	result, err := fixture.service.Review(context.Background(), fixture.root, fixture.state.manifest.WorkflowID, fixture.passing, gitrepo.WorktreeBaseline{})
+	if err != nil {
+		t.Fatalf("review retry: %v", err)
+	}
+	if result.Manifest.Review == nil || result.Manifest.Review.Attempt != 2 || result.Manifest.Review.MaxAttempts != 3 {
+		t.Fatalf("review retry counters = %#v", result.Manifest.Review)
+	}
+}
+
 func TestReviewRejectsAWorktreeChangedAfterChecksBeforeEnteringReview(t *testing.T) {
 	fixture := newReviewFixture(t, 3)
 	fixture.worktree.changed = [][]string{{"unchecked.go"}}
@@ -128,6 +142,34 @@ func TestReviewAttemptCapProducesHumanDirectionWithoutAnotherCorrection(t *testi
 	}
 	if len(fixture.runner.requests) != 1 || len(fixture.correctionPrompt.datas) != 0 || result.Manifest.Review.Attempt != 1 {
 		t.Fatalf("review cap exceeded: requests=%d corrections=%d manifest=%#v", len(fixture.runner.requests), len(fixture.correctionPrompt.datas), result.Manifest)
+	}
+}
+
+func TestReviewResumeAppliesHumanDirectionRunsChecksAndStartsFreshReview(t *testing.T) {
+	fixture := newReviewFixture(t, 3)
+	fixture.state.manifest.Phase = state.PhaseReview
+	fixture.state.manifest.Review = &state.ReviewCounters{Attempt: 3, MaxAttempts: 3}
+	fixture.state.manifest.BlockerSequence = 1
+	fixture.state.manifest.Blocker = answeredBlocker(state.PhaseReview)
+	fixture.outcomeDecoder.outcomes = []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "direction applied"}}
+	fixture.checkRunner.results = [][]checks.Result{fixture.passing}
+	fixture.reviewDecoder.results = []review.Result{{Approved: true, Findings: []review.Finding{}}}
+
+	result, err := fixture.service.Resume(context.Background(), fixture.root, fixture.state.manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("resume review: %v", err)
+	}
+	if result.Evidence == nil || !result.Evidence.Approved || !reflect.DeepEqual(result.SessionIDs, []string{"session-1", "session-2"}) {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := []agent.AccessLevel{fixture.runner.requests[0].Access, fixture.runner.requests[1].Access}; !reflect.DeepEqual(got, []agent.AccessLevel{agent.AccessWorkspaceWrite, agent.AccessReadOnly}) {
+		t.Fatalf("agent access sequence = %v", got)
+	}
+	if len(fixture.resumePrompt.datas) != 1 || fixture.resumePrompt.datas[0].Blocker == nil || fixture.resumePrompt.datas[0].Blocker.Answer != "Use option A" {
+		t.Fatalf("resume prompt data = %#v", fixture.resumePrompt.datas)
+	}
+	if !containsEvent(fixture.events, "invalidate") || len(fixture.checkRunner.definitions) != 1 || fixture.state.manifest.Review.Attempt != 3 {
+		t.Fatalf("events=%v checks=%v manifest=%#v", fixture.events, fixture.checkRunner.definitions, fixture.state.manifest)
 	}
 }
 
@@ -254,6 +296,7 @@ type reviewFixture struct {
 	state            *reviewState
 	reviewPrompt     *reviewPromptFake
 	correctionPrompt *reviewPromptFake
+	resumePrompt     *reviewPromptFake
 	runner           *reviewAgentFake
 	reviewDecoder    *reviewDecoderFake
 	outcomeDecoder   *reviewOutcomeDecoderFake
@@ -277,6 +320,7 @@ func newReviewFixture(t *testing.T, maxAttempts int) *reviewFixture {
 	fixture.state = &reviewState{manifest: manifest, events: &fixture.events}
 	fixture.reviewPrompt = &reviewPromptFake{label: "review", events: &fixture.events}
 	fixture.correctionPrompt = &reviewPromptFake{label: "correction", events: &fixture.events}
+	fixture.resumePrompt = &reviewPromptFake{label: "resume", events: &fixture.events}
 	fixture.runner = &reviewAgentFake{events: &fixture.events}
 	fixture.reviewDecoder = &reviewDecoderFake{events: &fixture.events}
 	fixture.outcomeDecoder = &reviewOutcomeDecoderFake{events: &fixture.events}
@@ -290,7 +334,7 @@ func newReviewFixture(t *testing.T, maxAttempts int) *reviewFixture {
 		fixture.runner, fixture.reviewDecoder, fixture.outcomeDecoder, fixture.checkRunner,
 		fixture.diff, fixture.worktree, fixture.evidence,
 		fixture.reviewSchema, filepath.Join(t.TempDir(), "agent.schema.json"), time.Minute,
-		definitions, []string{"generated"}, maxAttempts,
+		definitions, []string{"generated"}, maxAttempts, fixture.resumePrompt,
 	)
 	return fixture
 }

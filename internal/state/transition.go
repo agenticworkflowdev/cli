@@ -52,6 +52,16 @@ func (service *TransitionService) Transition(controllerRoot, workflowID string, 
 }
 
 func validateTransitionData(current, next Manifest) error {
+	if next.BlockerSequence < current.BlockerSequence || next.BlockerSequence > current.BlockerSequence+1 {
+		return errors.New("blocker sequence must be monotonic and advance one blocker at a time")
+	}
+	if next.BlockerSequence == current.BlockerSequence+1 {
+		if next.Blocker == nil || current.Blocker != nil && current.Blocker.Answer == nil {
+			return errors.New("blocker sequence can advance only when recording a new blocker intent")
+		}
+	} else if current.Blocker == nil && next.Blocker != nil {
+		return errors.New("new blocker intent must advance the blocker sequence")
+	}
 	if current.Phase != next.Phase && next.Blocker != nil {
 		return errors.New("a phase transition must clear the previous blocker")
 	}
@@ -69,7 +79,9 @@ func validateTransitionData(current, next Manifest) error {
 		}
 	}
 	if current.Phase == next.Phase && current.Blocker != nil && current.Blocker.Answer == nil && !sameBlockerIntent(current.Blocker, next.Blocker) {
-		return errors.New("unanswered blocker intent cannot be replaced")
+		if current.Status != next.Status || !pendingBlockerPublisherUpdate(current.Blocker, next.Blocker) {
+			return errors.New("unanswered blocker intent cannot be replaced")
+		}
 	}
 	if sameBlockerIntent(current.Blocker, next.Blocker) {
 		if current.Blocker.Comment != nil && !sameSourceReference(current.Blocker.Comment, next.Blocker.Comment) {
@@ -128,7 +140,14 @@ func validateReviewTransition(current, next Manifest) error {
 }
 
 func sameBlockerIntent(left, right *Blocker) bool {
-	return left != nil && right != nil && left.ID == right.ID && left.Phase == right.Phase && left.Question == right.Question
+	return left != nil && right != nil && left.ID == right.ID && left.Phase == right.Phase && left.Question == right.Question &&
+		left.Actor == right.Actor && left.Marker == right.Marker && left.CreatedAt.Equal(right.CreatedAt)
+}
+
+func pendingBlockerPublisherUpdate(current, next *Blocker) bool {
+	return current != nil && next != nil && current.ID == next.ID && current.Phase == next.Phase && current.Question == next.Question &&
+		current.Marker == next.Marker && current.CreatedAt.Equal(next.CreatedAt) && current.Actor != next.Actor &&
+		current.Comment == nil && next.Comment == nil && current.Answer == nil && next.Answer == nil
 }
 
 func samePullRequest(left, right *PullRequest) bool {
@@ -214,6 +233,7 @@ var allowedTransitions = map[workflowTransition]bool{
 	transition(PhaseSpec, StatusRunning, PhaseImplementation, StatusRunning):           true,
 	transition(PhaseSpec, StatusBlocked, PhaseSpec, StatusBlocked):                     true,
 	transition(PhaseSpec, StatusBlocked, PhaseSpec, StatusRunning):                     true,
+	transition(PhaseSpec, StatusBlocked, PhaseSpec, StatusFailed):                      true,
 	transition(PhaseSpec, StatusFailed, PhaseSpec, StatusFailed):                       true,
 	transition(PhaseImplementation, StatusRunning, PhaseImplementation, StatusRunning): true,
 	transition(PhaseImplementation, StatusRunning, PhaseImplementation, StatusBlocked): true,
@@ -221,6 +241,7 @@ var allowedTransitions = map[workflowTransition]bool{
 	transition(PhaseImplementation, StatusRunning, PhaseReview, StatusRunning):         true,
 	transition(PhaseImplementation, StatusBlocked, PhaseImplementation, StatusBlocked): true,
 	transition(PhaseImplementation, StatusBlocked, PhaseImplementation, StatusRunning): true,
+	transition(PhaseImplementation, StatusBlocked, PhaseImplementation, StatusFailed):  true,
 	transition(PhaseImplementation, StatusFailed, PhaseImplementation, StatusFailed):   true,
 	transition(PhaseReview, StatusRunning, PhaseReview, StatusRunning):                 true,
 	transition(PhaseReview, StatusRunning, PhaseReview, StatusBlocked):                 true,
@@ -229,6 +250,7 @@ var allowedTransitions = map[workflowTransition]bool{
 	transition(PhaseReview, StatusRunning, PhasePullRequest, StatusRunning):            true,
 	transition(PhaseReview, StatusBlocked, PhaseReview, StatusBlocked):                 true,
 	transition(PhaseReview, StatusBlocked, PhaseReview, StatusRunning):                 true,
+	transition(PhaseReview, StatusBlocked, PhaseReview, StatusFailed):                  true,
 	transition(PhaseReview, StatusFailed, PhaseReview, StatusFailed):                   true,
 	transition(PhasePullRequest, StatusRunning, PhasePullRequest, StatusRunning):       true,
 	transition(PhasePullRequest, StatusRunning, PhasePullRequest, StatusFailed):        true,

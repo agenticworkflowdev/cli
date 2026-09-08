@@ -65,11 +65,14 @@ type ReviewCounters struct {
 // Blocker records a durable request for human judgment. A blocker may be
 // present while running as publication intent and is required when blocked.
 type Blocker struct {
-	ID       string           `json:"id"`
-	Phase    Phase            `json:"phase"`
-	Question string           `json:"question"`
-	Comment  *SourceReference `json:"comment,omitempty"`
-	Answer   *BlockerAnswer   `json:"answer,omitempty"`
+	ID        string           `json:"id"`
+	Phase     Phase            `json:"phase"`
+	Question  string           `json:"question"`
+	Actor     string           `json:"actor"`
+	Marker    string           `json:"marker"`
+	CreatedAt time.Time        `json:"created_at"`
+	Comment   *SourceReference `json:"comment,omitempty"`
+	Answer    *BlockerAnswer   `json:"answer,omitempty"`
 }
 
 // SourceReference identifies one durable GitHub comment.
@@ -115,6 +118,7 @@ type Manifest struct {
 	Worktree          string          `json:"worktree"`
 	SpecificationPath string          `json:"specification_path,omitempty"`
 	Review            *ReviewCounters `json:"review,omitempty"`
+	BlockerSequence   int             `json:"blocker_sequence,omitempty"`
 	Blocker           *Blocker        `json:"blocker,omitempty"`
 	LastError         *WorkflowError  `json:"last_error,omitempty"`
 	PullRequest       *PullRequest    `json:"pull_request,omitempty"`
@@ -211,16 +215,22 @@ func (manifest Manifest) Validate() error {
 	if err := validatePhaseStatus(manifest.Phase, manifest.Status); err != nil {
 		return err
 	}
+	if manifest.BlockerSequence < 0 {
+		return errors.New("blocker sequence cannot be negative")
+	}
 	if manifest.Blocker != nil {
-		if strings.TrimSpace(manifest.Blocker.ID) == "" || strings.TrimSpace(manifest.Blocker.Question) == "" || manifest.Blocker.Phase != manifest.Phase {
-			return errors.New("blocker identity, phase, and question are required and must match the current phase")
+		wantID := BlockerID(manifest.BlockerSequence)
+		wantMarker := BlockerMarker(manifest.WorkflowID, wantID)
+		if manifest.BlockerSequence < 1 || manifest.Blocker.ID != wantID || strings.TrimSpace(manifest.Blocker.Question) == "" || manifest.Blocker.Phase != manifest.Phase ||
+			invalidSingleLine(manifest.Blocker.Actor) || manifest.Blocker.Marker != wantMarker || manifest.Blocker.CreatedAt.IsZero() {
+			return errors.New("blocker identity, sequence, phase, question, publisher, marker, and timestamp are required and must match the current workflow")
 		}
 		if manifest.Blocker.Comment != nil && !validSourceReference(*manifest.Blocker.Comment) {
 			return errors.New("blocker comment identity and URL are invalid")
 		}
 		if manifest.Blocker.Answer != nil {
 			answer := manifest.Blocker.Answer
-			if !validSourceReference(SourceReference{ID: answer.ID, URL: answer.URL}) || strings.TrimSpace(answer.Body) == "" || invalidSingleLine(answer.Author) || answer.CreatedAt.IsZero() {
+			if manifest.Blocker.Comment == nil || !validSourceReference(SourceReference{ID: answer.ID, URL: answer.URL}) || strings.TrimSpace(answer.Body) == "" || invalidSingleLine(answer.Author) || answer.CreatedAt.IsZero() {
 				return errors.New("blocker answer identity, URL, body, author, and timestamp are required")
 			}
 		}
@@ -253,6 +263,18 @@ func (manifest Manifest) Validate() error {
 		return errors.New("pull request is only valid during pull_request or done")
 	}
 	return nil
+}
+
+// BlockerID returns the monotonically increasing identity for one workflow's
+// blocker sequence.
+func BlockerID(sequence int) string {
+	return "blocker-" + strconv.Itoa(sequence)
+}
+
+// BlockerMarker returns the exact hidden marker used to reconcile a published
+// blocker comment after interruption.
+func BlockerMarker(workflowID, blockerID string) string {
+	return "<!-- awdev:blocker workflow=" + workflowID + " id=" + blockerID + " -->"
 }
 
 // ResolveWorktreePath converts a validated manifest worktree path into the

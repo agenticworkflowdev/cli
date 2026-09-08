@@ -54,6 +54,7 @@ type Services struct {
 	Initialize             func(string, agent.Provider) (initrepo.Result, error)
 	ValidateConfig         func(string) error
 	RunGitHub              func(context.Context, string, int, ProgressReporter) (workflow.RunResult, error)
+	ResumeGitHub           func(context.Context, string, int, ProgressReporter) (workflow.ResumeResult, error)
 	StatusGitHub           func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error)
 	Execute                func(context.Context, Operation, SourceItem, string) error
 	Getenv                 func(string) string

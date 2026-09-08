@@ -18,6 +18,17 @@ type IssueData struct {
 	URL    string
 }
 
+// BlockerData is the untrusted question-and-answer pair supplied to a fresh
+// resumed agent invocation.
+type BlockerData struct {
+	Phase        string
+	Question     string
+	QuestionURL  string
+	Answer       string
+	AnswerAuthor string
+	AnswerURL    string
+}
+
 // PromptData is the typed controller context exposed to prompt templates.
 type PromptData struct {
 	WorkflowID        string
@@ -28,6 +39,7 @@ type PromptData struct {
 	Issue             IssueData
 	CheckResults      []checks.Result
 	ReviewFindings    []review.Finding
+	Blocker           *BlockerData
 }
 
 // Renderer is one prompt compiled exactly once with strict missing-key

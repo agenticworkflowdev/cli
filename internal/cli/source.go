@@ -63,6 +63,14 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 				}
 				return renderGitHubStatus(command, result, jsonOutput)
 			}
+			if operation == OperationResume && item.Source == SourceGitHub && services.ResumeGitHub != nil {
+				progress := newProgressReporter(command.ErrOrStderr())
+				result, err := services.ResumeGitHub(command.Context(), root, item.Number, progress)
+				if err != nil {
+					return err
+				}
+				return renderGitHubResume(command, result)
+			}
 			if services.Execute == nil {
 				return fmt.Errorf("awdev %s github is not implemented yet", operation)
 			}
@@ -77,6 +85,35 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 		command.Flags().SetInterspersed(false)
 	}
 	return command
+}
+
+func renderGitHubResume(command *cobra.Command, result workflow.ResumeResult) error {
+	switch result.Outcome {
+	case workflow.ResumeWaiting:
+		if result.Manifest.Blocker == nil || result.Manifest.Blocker.Comment == nil {
+			return errors.New("waiting resume result is missing its blocker comment")
+		}
+		_, err := fmt.Fprintf(command.OutOrStdout(), "Workflow %s is still waiting for a reply: %s\n", result.Manifest.WorkflowID, result.Manifest.Blocker.Comment.URL)
+		return err
+	case workflow.ResumeContinued:
+		if result.Answer == nil {
+			return errors.New("continued resume result is missing its selected answer")
+		}
+		if _, err := fmt.Fprintf(
+			command.OutOrStdout(),
+			"Workflow %s resumed from %s.\nPhase: %s\nStatus: %s\n",
+			result.Manifest.WorkflowID, result.Answer.URL, result.Manifest.Phase, result.Manifest.Status,
+		); err != nil {
+			return err
+		}
+		if reviewPassed(result.Review) {
+			_, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed")
+			return err
+		}
+		return nil
+	default:
+		return errors.New("GitHub resume result has an unknown outcome")
+	}
 }
 
 func newProgressReporter(writer io.Writer) ProgressReporter {
@@ -218,10 +255,24 @@ func renderGitHubRun(command *cobra.Command, result workflow.RunResult) error {
 		return err
 	}
 	if result.Manifest.SpecificationPath != "" {
-		_, err := fmt.Fprintf(command.OutOrStdout(), "Specification: %s\n", result.Manifest.SpecificationPath)
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "Specification: %s\n", result.Manifest.SpecificationPath); err != nil {
+			return err
+		}
+	}
+	if reviewPassed(result.Review) {
+		if _, err := fmt.Fprintln(command.OutOrStdout(), "Review: passed"); err != nil {
+			return err
+		}
+	}
+	if result.Manifest.Status == state.StatusBlocked && result.Manifest.Blocker != nil && result.Manifest.Blocker.Comment != nil {
+		_, err := fmt.Fprintf(command.OutOrStdout(), "Waiting for reply: %s\n", result.Manifest.Blocker.Comment.URL)
 		return err
 	}
 	return nil
+}
+
+func reviewPassed(result *workflow.ReviewResult) bool {
+	return result != nil && result.Evidence != nil && result.Evidence.Approved
 }
 
 type publicIssueStatus struct {

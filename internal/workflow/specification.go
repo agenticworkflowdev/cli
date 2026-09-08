@@ -55,35 +55,34 @@ type SpecificationCreator interface {
 
 // SpecificationService creates and verifies one workflow specification.
 type SpecificationService struct {
-	reader     SpecificationManifestReader
-	transition SpecificationTransitioner
-	prompt     SpecificationPromptRenderer
-	runner     agent.Runner
-	decoder    SpecificationResultDecoder
-	schemaPath string
-	timeout    time.Duration
+	reader       SpecificationManifestReader
+	transition   SpecificationTransitioner
+	prompt       SpecificationPromptRenderer
+	resumePrompt SpecificationPromptRenderer
+	runner       agent.Runner
+	decoder      SpecificationResultDecoder
+	schemaPath   string
+	timeout      time.Duration
 }
 
 // NewSpecificationService constructs the specification phase service.
-func NewSpecificationService(reader SpecificationManifestReader, transition SpecificationTransitioner, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration) *SpecificationService {
-	return &SpecificationService{
+func NewSpecificationService(reader SpecificationManifestReader, transition SpecificationTransitioner, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration, resumePrompt ...SpecificationPromptRenderer) *SpecificationService {
+	service := &SpecificationService{
 		reader: reader, transition: transition, prompt: promptRenderer,
 		runner: runner, decoder: decoder, schemaPath: schemaPath, timeout: timeout,
 	}
+	if len(resumePrompt) > 0 {
+		service.resumePrompt = resumePrompt[0]
+	}
+	return service
 }
 
 // Create durably enters spec/running, invokes the agent, validates its result,
 // and records the specification only after the exact filesystem postcondition
 // exists in the worktree.
 func (service *SpecificationService) Create(ctx context.Context, controllerRoot, workflowID string) (SpecificationResult, error) {
-	if service == nil || service.reader == nil || service.transition == nil || service.prompt == nil || service.runner == nil || service.decoder == nil {
-		return SpecificationResult{}, errors.New("specification service is not fully configured")
-	}
-	if service.timeout <= 0 {
-		return SpecificationResult{}, errors.New("specification timeout must be positive")
-	}
-	if !filepath.IsAbs(service.schemaPath) || filepath.Clean(service.schemaPath) != service.schemaPath {
-		return SpecificationResult{}, errors.New("specification result schema must be an absolute clean path")
+	if err := service.validate(); err != nil {
+		return SpecificationResult{}, err
 	}
 
 	current, err := service.reader.Read(controllerRoot, workflowID)
@@ -93,11 +92,6 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 	if current.Phase != state.PhaseInit || current.Status != state.StatusRunning {
 		return SpecificationResult{}, fmt.Errorf("specification requires init/running state, got %s/%s", current.Phase, current.Status)
 	}
-	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, current.Worktree)
-	if err != nil {
-		return SpecificationResult{}, fmt.Errorf("resolve specification worktree: %w", err)
-	}
-
 	running := current
 	running.Phase = state.PhaseSpec
 	running.Status = state.StatusRunning
@@ -108,27 +102,55 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 		return SpecificationResult{}, fmt.Errorf("persist spec/running transition: %w", err)
 	}
 
+	return service.run(ctx, controllerRoot, running, service.prompt)
+}
+
+// Resume continues specification in a fresh agent run using the persisted
+// blocker question and selected human answer.
+func (service *SpecificationService) Resume(ctx context.Context, controllerRoot, workflowID string) (SpecificationResult, error) {
+	if err := service.validate(); err != nil {
+		return SpecificationResult{}, err
+	}
+	if service.resumePrompt == nil {
+		return SpecificationResult{}, errors.New("specification resume prompt is not configured")
+	}
+	current, err := service.reader.Read(controllerRoot, workflowID)
+	if err != nil {
+		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification resume: %w", err)
+	}
+	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
+		return SpecificationResult{}, fmt.Errorf("specification resume requires answered spec/running state, got %s/%s", current.Phase, current.Status)
+	}
+	return service.run(ctx, controllerRoot, current, service.resumePrompt)
+}
+
+func (service *SpecificationService) validate() error {
+	if service == nil || service.reader == nil || service.transition == nil || service.prompt == nil || service.runner == nil || service.decoder == nil {
+		return errors.New("specification service is not fully configured")
+	}
+	if service.timeout <= 0 {
+		return errors.New("specification timeout must be positive")
+	}
+	if !filepath.IsAbs(service.schemaPath) || filepath.Clean(service.schemaPath) != service.schemaPath {
+		return errors.New("specification result schema must be an absolute clean path")
+	}
+	return nil
+}
+
+func (service *SpecificationService) run(ctx context.Context, controllerRoot string, running state.Manifest, renderer SpecificationPromptRenderer) (SpecificationResult, error) {
+	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, running.Worktree)
+	if err != nil {
+		return SpecificationResult{}, fmt.Errorf("resolve specification worktree: %w", err)
+	}
 	specificationPath, err := state.SpecificationPathForBranch(running.Branch)
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("derive specification path: %w", err))
 	}
-	promptText, err := service.prompt.Render(prompt.PromptData{
-		WorkflowID:        running.WorkflowID,
-		Repository:        running.Repository,
-		Branch:            running.Branch,
-		BaseSHA:           running.BaseSHA,
-		SpecificationPath: specificationPath,
-		Issue: prompt.IssueData{
-			Number: running.Issue.Number,
-			Title:  running.Issue.Title,
-			Body:   running.Issue.Body,
-			URL:    running.Issue.URL,
-		},
-	})
+	promptText, err := renderer.Render(promptData(running, specificationPath))
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("render specification prompt: %w", err))
 	}
-	manifestPath, err := state.ManifestPath(controllerRoot, workflowID)
+	manifestPath, err := state.ManifestPath(controllerRoot, running.WorkflowID)
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("derive agent output directory: %w", err))
 	}
@@ -160,7 +182,7 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 	}
 	completed := running
 	completed.SpecificationPath = specificationPath
-	if err := service.transition.Transition(controllerRoot, workflowID, completed); err != nil {
+	if err := service.transition.Transition(controllerRoot, running.WorkflowID, completed); err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("record verified specification: %w", err))
 	}
 	result.Manifest = completed
@@ -175,6 +197,21 @@ func (service *SpecificationService) fail(controllerRoot string, running state.M
 		return SpecificationResult{Manifest: running}, errors.Join(cause, fmt.Errorf("persist specification failure: %w", err))
 	}
 	return SpecificationResult{Manifest: failed}, cause
+}
+
+func promptData(manifest state.Manifest, specificationPath string) prompt.PromptData {
+	data := prompt.PromptData{
+		WorkflowID: manifest.WorkflowID, Repository: manifest.Repository, Branch: manifest.Branch,
+		BaseSHA: manifest.BaseSHA, SpecificationPath: specificationPath,
+		Issue: prompt.IssueData{Number: manifest.Issue.Number, Title: manifest.Issue.Title, Body: manifest.Issue.Body, URL: manifest.Issue.URL},
+	}
+	if manifest.Blocker != nil && manifest.Blocker.Comment != nil && manifest.Blocker.Answer != nil {
+		data.Blocker = &prompt.BlockerData{
+			Phase: string(manifest.Blocker.Phase), Question: manifest.Blocker.Question, QuestionURL: manifest.Blocker.Comment.URL,
+			Answer: manifest.Blocker.Answer.Body, AnswerAuthor: manifest.Blocker.Answer.Author, AnswerURL: manifest.Blocker.Answer.URL,
+		}
+	}
+	return data
 }
 
 func sanitizeTechnicalError(err error, controllerRoot string) string {

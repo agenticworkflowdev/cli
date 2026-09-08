@@ -32,6 +32,7 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 		"spec/running->implementation/running":           true,
 		"spec/blocked->spec/blocked":                     true,
 		"spec/blocked->spec/running":                     true,
+		"spec/blocked->spec/failed":                      true,
 		"spec/failed->spec/failed":                       true,
 		"implementation/running->implementation/running": true,
 		"implementation/running->implementation/blocked": true,
@@ -39,6 +40,7 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 		"implementation/running->review/running":         true,
 		"implementation/blocked->implementation/blocked": true,
 		"implementation/blocked->implementation/running": true,
+		"implementation/blocked->implementation/failed":  true,
 		"implementation/failed->implementation/failed":   true,
 		"review/running->review/running":                 true,
 		"review/running->review/blocked":                 true,
@@ -47,6 +49,7 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 		"review/running->pull_request/running":           true,
 		"review/blocked->review/blocked":                 true,
 		"review/blocked->review/running":                 true,
+		"review/blocked->review/failed":                  true,
 		"review/failed->review/failed":                   true,
 		"pull_request/running->pull_request/running":     true,
 		"pull_request/running->pull_request/failed":      true,
@@ -99,7 +102,10 @@ func TestTransitionRequiresBlockerIntentAnswerAndPullRequestPersistence(t *testi
 			t.Fatal("workflow blocked without durable blocker intent")
 		}
 		intent := current
-		intent.Blocker = &state.Blocker{ID: "blocker-1", Phase: state.PhaseSpec, Question: "question"}
+		intent.BlockerSequence = 1
+		intent.Blocker = publishedBlocker(state.PhaseSpec)
+		intent.Blocker.Question = "question"
+		intent.Blocker.Comment = nil
 		if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, intent); err != nil {
 			t.Fatalf("persist intent: %v", err)
 		}
@@ -140,6 +146,35 @@ func TestTransitionRequiresBlockerIntentAnswerAndPullRequestPersistence(t *testi
 			t.Fatalf("complete after pull request persistence: %v", err)
 		}
 	})
+}
+
+func TestTransitionAllowsOnlyThePublisherToChangeBeforeBlockerPublication(t *testing.T) {
+	root := t.TempDir()
+	store := state.NewStore()
+	current := manifestAt(root, state.PhaseImplementation, state.StatusRunning)
+	current.BlockerSequence = 1
+	current.Blocker = publishedBlocker(current.Phase)
+	current.Blocker.Comment = nil
+	if err := store.Save(root, current); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := current
+	updated.Blocker = publishedBlocker(current.Phase)
+	updated.Blocker.Comment = nil
+	updated.Blocker.Actor = "awdev[bot]"
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, updated); err != nil {
+		t.Fatalf("update pending blocker publisher: %v", err)
+	}
+
+	replaced := updated
+	replaced.Blocker = publishedBlocker(current.Phase)
+	replaced.Blocker.Comment = nil
+	replaced.Blocker.Actor = updated.Blocker.Actor
+	replaced.Blocker.Question = "replacement question"
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, replaced); err == nil {
+		t.Fatal("pending blocker question was replaced with its publisher")
+	}
 }
 
 func TestTransitionRequiresDurableIntentBeforeExternalIdentities(t *testing.T) {
@@ -245,6 +280,7 @@ func manifestAt(root string, phase state.Phase, status state.Status) state.Manif
 		manifest.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
 	}
 	if status == state.StatusBlocked {
+		manifest.BlockerSequence = 1
 		manifest.Blocker = publishedBlocker(phase)
 	}
 	if status == state.StatusFailed {
@@ -258,9 +294,12 @@ func manifestAt(root string, phase state.Phase, status state.Status) state.Manif
 
 func prepareTransitionData(current, next *state.Manifest) {
 	if next.Status == state.StatusBlocked && current.Status == state.StatusRunning && current.Phase == next.Phase {
-		current.Blocker = &state.Blocker{ID: "blocker-1", Phase: current.Phase, Question: next.Blocker.Question}
+		current.BlockerSequence = 1
+		current.Blocker = publishedBlocker(current.Phase)
+		current.Blocker.Comment = nil
 	}
 	if current.Status == state.StatusBlocked && current.Phase == next.Phase {
+		next.BlockerSequence = current.BlockerSequence
 		next.Blocker = publishedBlocker(current.Phase)
 		if next.Status == state.StatusRunning {
 			next.Blocker.Answer = &state.BlockerAnswer{

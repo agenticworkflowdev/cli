@@ -134,7 +134,7 @@ func TestRunGitHubCreatesValidatedWorktreeThenSavesManifest(t *testing.T) {
 	ghScript := `#!/bin/sh
 case "$1 $2" in
   "repo view") printf '%s' '{"nameWithOwner":"owner/repository","defaultBranchRef":{"name":"main"}}' ;;
-  "api user") printf '%s' '{"login":"octocat"}' ;;
+  "api graphql") printf '%s' '{"data":{"viewer":{"login":"octocat"}}}' ;;
   "issue view") printf '%s' '{"number":17,"title":"A title","body":"body with $() ; and <!-- marker -->","url":"https://github.com/owner/repository/issues/17","state":"OPEN","updatedAt":"2026-08-28T12:00:00Z"}' ;;
   *) exit 2 ;;
 esac
@@ -193,7 +193,7 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 	if manifest.Issue.Body != "body with $() ; and <!-- marker -->" || manifest.Worktree != ".awdev/worktrees/gh-17-a-title" || manifest.BaseSHA != baseSHA || manifest.Phase != state.PhaseReview || manifest.Status != state.StatusRunning || manifest.SpecificationPath != ".awdev/specs/gh-17-a-title.md" || manifest.Review == nil || manifest.Review.Attempt != 1 {
 		t.Fatalf("saved manifest = %#v", manifest)
 	}
-	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\n"
+	wantOutput := "Creating specification. This can take a few moments...\ngh-17-a-title.md\nImplementing the specification. This can take a few moments...\nReviewing the implementation. This can take a few moments...\nGitHub issue: #17\nWorktree: " + manifest.Worktree + "\nBranch: gh-17-a-title\nSpecification: " + manifest.SpecificationPath + "\nReview: passed\n"
 	if got := output.String(); got != wantOutput {
 		t.Fatalf("output = %q, want %q", got, wantOutput)
 	}

@@ -43,6 +43,9 @@ func NewCommand() *cobra.Command {
 	manifestStore := state.NewStore()
 	manifestReader := state.NewManifestReader()
 	statusService := workflow.NewStatusService(manifestReader, githubClient)
+	buildRuntime := func(controllerRoot string, progress cli.ProgressReporter) (workflowRuntime, error) {
+		return newWorkflowRuntime(controllerRoot, progress, processRunner, githubClient, worktreeBootstrapper, manifestStore, manifestReader)
+	}
 	return cli.NewRootCommand(cli.Services{
 		WorkingDirectory:       os.Getwd,
 		DiscoverRoot:           gitrepo.DiscoverControllerRoot,
@@ -57,114 +60,121 @@ func NewCommand() *cobra.Command {
 			return err
 		},
 		RunGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, progress cli.ProgressReporter) (workflow.RunResult, error) {
-			installed, err := assets.LoadInstalled(controllerRoot)
+			runtime, err := buildRuntime(controllerRoot, progress)
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
-			configuration, err := config.Parse(installed.Config.Contents)
+			return runtime.run.RunGitHub(ctx, controllerRoot, issueNumber)
+		},
+		ResumeGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, progress cli.ProgressReporter) (workflow.ResumeResult, error) {
+			runtime, err := buildRuntime(controllerRoot, progress)
 			if err != nil {
-				return workflow.RunResult{}, err
+				return workflow.ResumeResult{}, err
 			}
-			if configuration.Agent.Provider != agent.ProviderCodex {
-				return workflow.RunResult{}, fmt.Errorf("agent provider %q is unavailable", configuration.Agent.Provider)
-			}
-			specificationPrompt, err := prompt.NewRenderer(assets.PromptSpec, installed.Prompts[assets.PromptSpec].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			implementationPrompt, err := prompt.NewRenderer(assets.PromptImplement, installed.Prompts[assets.PromptImplement].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			fixChecksPrompt, err := prompt.NewRenderer(assets.PromptFixChecks, installed.Prompts[assets.PromptFixChecks].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			reviewPrompt, err := prompt.NewRenderer(assets.PromptReview, installed.Prompts[assets.PromptReview].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			fixReviewPrompt, err := prompt.NewRenderer(assets.PromptFixReview, installed.Prompts[assets.PromptFixReview].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			resultDecoder, err := agent.NewResultDecoder(installed.Schemas[assets.SchemaAgentResult].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			reviewDecoder, err := review.NewResultDecoder(installed.Schemas[assets.SchemaReviewResult].Contents)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			codexRunner, err := codex.NewRunner(configuration.Codex.Binary, processRunner)
-			if err != nil {
-				return workflow.RunResult{}, err
-			}
-			specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval}
-			implementationRunner := &progressAgentRunner{
-				runner: codexRunner, report: progress, interval: agentSpinnerInterval,
-				startMessage: "Implementing the specification. This can take a few moments...",
-			}
-			reviewRunner := &progressAgentRunner{
-				runner: codexRunner, report: progress, interval: agentSpinnerInterval,
-				startMessage: "Reviewing the implementation. This can take a few moments...",
-			}
-			transitionService := state.NewTransitionService(manifestStore)
-			specificationService := workflow.NewSpecificationService(
-				manifestStore,
-				transitionService,
-				specificationPrompt,
-				specificationRunner,
-				resultDecoder,
-				installed.Schemas[assets.SchemaAgentResult].Path,
-				configuration.Agent.Timeout,
-			)
-			reportingSpecification := &reportingSpecificationCreator{creator: specificationService, report: progress}
-			implementationService := workflow.NewImplementationService(
-				manifestStore,
-				transitionService,
-				implementationPrompt,
-				fixChecksPrompt,
-				implementationRunner,
-				resultDecoder,
-				checks.NewExecutor(processRunner),
-				gitrepo.NewDiffInspector("git", processRunner),
-				gitrepo.NewWorktreeInspector("git", processRunner),
-				installed.Schemas[assets.SchemaAgentResult].Path,
-				configuration.Agent.Timeout,
-				configuration.Checks,
-				configuration.ProtectedPaths,
-			)
-			reviewService := workflow.NewReviewService(
-				manifestStore,
-				transitionService,
-				reviewPrompt,
-				fixReviewPrompt,
-				reviewRunner,
-				reviewDecoder,
-				resultDecoder,
-				checks.NewExecutor(processRunner),
-				gitrepo.NewDiffInspector("git", processRunner),
-				gitrepo.NewWorktreeInspector("git", processRunner),
-				manifestStore,
-				installed.Schemas[assets.SchemaReviewResult].Path,
-				installed.Schemas[assets.SchemaAgentResult].Path,
-				configuration.Agent.Timeout,
-				configuration.Checks,
-				configuration.ProtectedPaths,
-				configuration.Review.MaxAttempts,
-			)
-			runService := workflow.NewRunService(
-				state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
-				state.NewWorkflowID, reportingSpecification, implementationService, reviewService,
-			)
-			return runService.RunGitHub(ctx, controllerRoot, issueNumber)
+			return runtime.resume.ResumeGitHub(ctx, controllerRoot, issueNumber)
 		},
 		StatusGitHub: statusService.StatusGitHub,
 		Execute: func(_ context.Context, operation cli.Operation, item cli.SourceItem, _ string) error {
 			return fmt.Errorf("awdev %s %s is not implemented yet", operation, item.Source)
 		},
 	})
+}
+
+type workflowRuntime struct {
+	run    *workflow.RunService
+	resume *workflow.ResumeService
+}
+
+func newWorkflowRuntime(
+	controllerRoot string,
+	progress cli.ProgressReporter,
+	processRunner processrun.Runner,
+	githubClient *githubapi.Client,
+	worktreeBootstrapper workflow.Bootstrapper,
+	manifestStore *state.Store,
+	manifestReader state.ManifestReader,
+) (workflowRuntime, error) {
+	installed, err := assets.LoadInstalled(controllerRoot)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	configuration, err := config.Parse(installed.Config.Contents)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	if configuration.Agent.Provider != agent.ProviderCodex {
+		return workflowRuntime{}, fmt.Errorf("agent provider %q is unavailable", configuration.Agent.Provider)
+	}
+	render := func(name string) (*prompt.Renderer, error) {
+		return prompt.NewRenderer(name, installed.Prompts[name].Contents)
+	}
+	specificationPrompt, err := render(assets.PromptSpec)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	implementationPrompt, err := render(assets.PromptImplement)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	fixChecksPrompt, err := render(assets.PromptFixChecks)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	reviewPrompt, err := render(assets.PromptReview)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	fixReviewPrompt, err := render(assets.PromptFixReview)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	resumePrompt, err := render(assets.PromptResume)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	resultDecoder, err := agent.NewResultDecoder(installed.Schemas[assets.SchemaAgentResult].Contents)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	reviewDecoder, err := review.NewResultDecoder(installed.Schemas[assets.SchemaReviewResult].Contents)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	codexRunner, err := codex.NewRunner(configuration.Codex.Binary, processRunner)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
+	specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval}
+	implementationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "Implementing the specification. This can take a few moments..."}
+	reviewRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "Reviewing the implementation. This can take a few moments..."}
+	transitionService := state.NewTransitionService(manifestStore)
+	specificationService := workflow.NewSpecificationService(
+		manifestStore, transitionService, specificationPrompt, specificationRunner, resultDecoder,
+		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, resumePrompt,
+	)
+	reportingSpecification := &reportingSpecificationCreator{creator: specificationService, report: progress}
+	implementationService := workflow.NewImplementationService(
+		manifestStore, transitionService, implementationPrompt, fixChecksPrompt, implementationRunner, resultDecoder,
+		checks.NewExecutor(processRunner), gitrepo.NewDiffInspector("git", processRunner), gitrepo.NewWorktreeInspector("git", processRunner),
+		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, configuration.Checks, configuration.ProtectedPaths, resumePrompt,
+	)
+	reviewService := workflow.NewReviewService(
+		manifestStore, transitionService, reviewPrompt, fixReviewPrompt, reviewRunner, reviewDecoder, resultDecoder,
+		checks.NewExecutor(processRunner), gitrepo.NewDiffInspector("git", processRunner), gitrepo.NewWorktreeInspector("git", processRunner), manifestStore,
+		installed.Schemas[assets.SchemaReviewResult].Path, installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout,
+		configuration.Checks, configuration.ProtectedPaths, configuration.Review.MaxAttempts, resumePrompt,
+	)
+	blockers := workflow.NewBlockerService(manifestStore, transitionService, githubClient, time.Now)
+	continuation := workflow.NewResumeContinuationService(specificationService, implementationService, reviewService)
+	return workflowRuntime{
+		run: workflow.NewRunService(
+			state.NewFileLocker(), manifestReader, githubClient, worktreeBootstrapper, manifestStore,
+			state.NewWorkflowID, reportingSpecification, implementationService, reviewService, blockers,
+		),
+		resume: workflow.NewResumeService(
+			state.NewFileLocker(), manifestReader, transitionService, githubClient, blockers, continuation,
+		),
+	}, nil
 }
 
 type reportingSpecificationCreator struct {

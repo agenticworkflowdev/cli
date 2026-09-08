@@ -12,6 +12,7 @@ const (
 	PromptFixChecks = "fix-checks"
 	PromptReview    = "review"
 	PromptFixReview = "fix-review"
+	PromptResume    = "resume-blocked"
 
 	SchemaAgentResult  = "agent-result"
 	SchemaReviewResult = "review-result"
@@ -23,6 +24,7 @@ var installedPromptFiles = map[string]string{
 	PromptFixChecks: "fix-checks.md",
 	PromptReview:    "review.md",
 	PromptFixReview: "fix-review.md",
+	PromptResume:    "resume-blocked.md",
 }
 
 var installedSchemaFiles = map[string]string{

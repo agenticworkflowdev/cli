@@ -105,8 +105,8 @@ func TestLoadInstalledUsesControllerRootAndRepositoryOwnedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load installed assets: %v", err)
 	}
-	if len(installed.Prompts) != 5 {
-		t.Fatalf("prompt count = %d, want 5", len(installed.Prompts))
+	if len(installed.Prompts) != 6 {
+		t.Fatalf("prompt count = %d, want 6", len(installed.Prompts))
 	}
 	if len(installed.Schemas) != 2 {
 		t.Fatalf("schema count = %d, want 2", len(installed.Schemas))

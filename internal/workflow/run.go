@@ -57,14 +57,19 @@ type RunService struct {
 	specification  SpecificationCreator
 	implementation ImplementationRunner
 	reviewer       Reviewer
+	publisher      BlockerPublisher
 }
 
 // NewRunService constructs the run application service.
-func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), specification SpecificationCreator, implementation ImplementationRunner, reviewer Reviewer) *RunService {
-	return &RunService{
+func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), specification SpecificationCreator, implementation ImplementationRunner, reviewer Reviewer, publisher ...BlockerPublisher) *RunService {
+	service := &RunService{
 		locker: locker, existing: existing, github: github, bootstrapper: bootstrapper,
 		manifestWriter: manifestWriter, workflowIDs: workflowIDs, specification: specification, implementation: implementation, reviewer: reviewer,
 	}
+	if len(publisher) > 0 {
+		service.publisher = publisher[0]
+	}
+	return service
 }
 
 // RunGitHub validates one issue and holds the workflow lock through any
@@ -84,7 +89,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if err != nil {
 		return RunResult{}, fmt.Errorf("check existing workflow: %w", err)
 	}
-	if existing.Exists {
+	if existing.Exists && !pendingBlockerIntent(existing.Manifest) {
 		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
 
@@ -104,6 +109,14 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		return RunResult{}, fmt.Errorf("check existing workflow: %w", err)
 	}
 	if existing.Exists {
+		if pendingBlockerIntent(existing.Manifest) {
+			if service.publisher == nil {
+				return RunResult{}, errors.New("blocker publisher is unavailable")
+			}
+			published, publishErr := service.publisher.Publish(ctx, controllerRoot, existing.Manifest.WorkflowID, BlockerRequest{Phase: existing.Manifest.Blocker.Phase, Question: existing.Manifest.Blocker.Question})
+			existing.Manifest = &published
+			return RunResult{WorkflowID: published.WorkflowID, Outcome: RunExisting, Existing: existing, Manifest: &published}, publishErr
+		}
 		return RunResult{WorkflowID: existing.Manifest.WorkflowID, Outcome: RunExisting, Existing: existing}, nil
 	}
 
@@ -158,19 +171,45 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		return RunResult{}, err
 	}
 	if specification.Blocker != nil {
-		return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &specification.Manifest, Specification: &specification}, nil
+		published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, specification.Blocker)
+		specification.Manifest = published
+		return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &specification.Manifest, Specification: &specification}, publishErr
 	}
 	implementation, err := service.implementation.Implement(ctx, controllerRoot, workflowID)
-	if err != nil || implementation.Blocker != nil {
+	if err != nil {
 		return RunResult{
 			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
 			Manifest: &implementation.Manifest, Specification: &specification, Implementation: &implementation,
 		}, err
 	}
+	if implementation.Blocker != nil {
+		published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, implementation.Blocker)
+		implementation.Manifest = published
+		return RunResult{
+			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
+			Manifest: &implementation.Manifest, Specification: &specification, Implementation: &implementation,
+		}, publishErr
+	}
 	reviewResult, err := service.reviewer.Review(ctx, controllerRoot, workflowID, implementation.CheckResults, implementation.CheckedState)
+	if err == nil && reviewResult.Blocker != nil {
+		published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, reviewResult.Blocker)
+		reviewResult.Manifest = published
+		err = publishErr
+	}
 	result = RunResult{
 		WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
 		Manifest: &reviewResult.Manifest, Specification: &specification, Implementation: &implementation, Review: &reviewResult,
 	}
 	return result, err
+}
+
+func pendingBlockerIntent(manifest *state.Manifest) bool {
+	return manifest != nil && manifest.Status == state.StatusRunning && manifest.Blocker != nil && manifest.Blocker.Answer == nil
+}
+
+func (service *RunService) publishBlocker(ctx context.Context, controllerRoot, workflowID string, blocker *BlockerRequest) (state.Manifest, error) {
+	if service.publisher == nil {
+		return state.Manifest{}, errors.New("blocker publisher is unavailable")
+	}
+	return service.publisher.Publish(ctx, controllerRoot, workflowID, *blocker)
 }
