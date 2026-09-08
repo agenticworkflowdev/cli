@@ -63,8 +63,20 @@ Pass commands and arguments in the same way as with the installed executable:
 
 ```sh
 go run ./cmd/awdev --help
-go run ./cmd/awdev some-command
+go run ./cmd/awdev init
+go run ./cmd/awdev run github 123
+go run ./cmd/awdev status github 123 --json
+go run ./cmd/awdev resume github 123
+go run ./cmd/awdev retry github 123
 ```
+
+End-to-end development requires a non-shallow Git checkout with an `origin`
+matching the repository reported by an authenticated GitHub CLI, plus an
+authenticated Codex CLI. The commands run in the foreground; cancellation
+terminates the active child process tree and leaves durable state for
+inspection. See [README.md](README.md) for configuration and lifecycle details
+and [docs/manual-recovery.md](docs/manual-recovery.md) before altering failed
+workflow state.
 
 The usual local development cycle is:
 
@@ -96,5 +108,10 @@ Format, analyze, test, and build the project:
 gofmt -w .
 go vet ./...
 go test ./...
+go test -race ./...
 go build ./...
 ```
+
+The `internal/e2e` package builds the real executable, uses real temporary Git
+repositories with local bare origins, and substitutes deterministic `gh` and
+`codex` executables. It does not require network access or live credentials.
