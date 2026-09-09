@@ -13,15 +13,16 @@ interrupted workflow can be inspected safely.
 - [GitHub CLI](https://cli.github.com/) installed and authenticated for the
   repository. AWDev uses the active `gh` identity; `GH_TOKEN` can select a
   non-interactive identity.
-- Codex CLI installed and authenticated. Its executable can be changed in
-  `.awdev/config.json`.
+- The CLI for the chosen agent, installed and authenticated: Codex CLI, or
+  Claude Code CLI. Its executable can be changed in `.awdev/config.json`.
 
-AWDev invokes GitHub CLI and Codex directly with argument arrays. It does not
-run either command through a shell, and GitHub prompts are disabled.
+AWDev invokes GitHub CLI and the agent CLI directly with argument arrays. It
+does not run either command through a shell, and GitHub prompts are disabled.
 
 ## Initialize and run
 
-From anywhere inside the repository, initialize AWDev and choose Codex:
+From anywhere inside the repository, initialize AWDev and select the agent
+(Codex or Claude Code):
 
 ```sh
 awdev init
@@ -38,9 +39,10 @@ initialization:
 awdev init --with-skill
 ```
 
-The flag additively installs `.agents/skills/awdev/SKILL.md` and its Codex
-metadata. Repeating it fills in missing files without changing existing ones;
-plain `awdev init` does not install or require the skill.
+The flag additively installs `.agents/skills/awdev/SKILL.md` and the agent
+metadata for the selected provider. Repeating it fills in missing files without
+changing existing ones; plain `awdev init` does not install or require the
+skill.
 
 Run an issue and inspect its stable machine-readable status:
 
@@ -73,10 +75,15 @@ foreground command exits.
 
 `.awdev/config.json` uses schema version 1. Its fields are:
 
-- `agent.provider`: `codex` for the current release.
+- `agent.provider`: `codex` or `claude-code`. `awdev init` writes the section
+  for the provider you select.
 - `agent.timeout`: positive Go duration applied to each agent invocation; the
   shipped default is `30m`.
-- `codex.binary`: executable name or path for Codex CLI.
+- `codex.binary`: executable name or path for Codex CLI (provider `codex`).
+- `claude_code.binary`: executable name or path for Claude Code CLI (provider
+  `claude-code`); the shipped default is `claude`.
+- `claude_code.model`: optional model override passed to Claude Code; empty
+  uses the CLI default.
 - `checks`: ordered checks, each with a name, optional repository-relative
   directory, argument-array command, and positive timeout. The shipped check
   timeout is `10m`.
@@ -128,10 +135,9 @@ for phase-specific guidance.
 
 ## Current boundaries
 
-GitHub is the implemented issue source and Codex is the implemented agent.
-Claude Code remains visible in the initialization selector but selecting it
-only reports that it is unavailable. The source-aware command grammar reserves
-`linear` for a future source, but Linear operations are unavailable.
+GitHub is the implemented issue source. Codex and Claude Code are both
+implemented agents, selected at `awdev init`. The source-aware command grammar
+reserves `linear` for a future source, but Linear operations are unavailable.
 
 This MVP creates one pull request. It does not wait for hosted CI, merge pull
 requests, clean up worktrees, run hosted workflows, or expose an MCP service.

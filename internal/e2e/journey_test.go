@@ -38,6 +38,33 @@ type fixture struct {
 	root     string
 	fakeDir  string
 	checkBin string
+	provider agentProvider
+}
+
+// agentProvider names the agent adapter under test: the config section written
+// into .awdev/config.json and the fake binary linked into .fake/bin.
+type agentProvider struct {
+	config string
+	tool   string
+}
+
+var (
+	codexProvider  = agentProvider{config: "codex", tool: "codex"}
+	claudeProvider = agentProvider{config: "claude-code", tool: "claude"}
+	allProviders   = []agentProvider{codexProvider, claudeProvider}
+)
+
+// retargetTrace rewrites the "codex:" trace labels in a want list to the label
+// prefix the given provider emits.
+func retargetTrace(labels []string, tool string) []string {
+	if tool == "codex" {
+		return labels
+	}
+	out := make([]string, len(labels))
+	for index, label := range labels {
+		out[index] = strings.Replace(label, "codex:", tool+":", 1)
+	}
+	return out
 }
 
 type stableStatus struct {
@@ -135,46 +162,57 @@ func TestHappyAndCorrectionJourneysAsBuilt(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newFixture(t, test.mode)
-			fixture.initialize(t)
-			output := fixture.run(t, "run", "github", "123")
-			if !strings.Contains(output, "Pull request created: https://github.com/owner/repo/pull/77") {
-				t.Fatalf("run output = %q", output)
-			}
-
-			stable := fixture.status(t)
-			if !strings.HasPrefix(stable.WorkflowID, "wf_") || stable.Phase != "done" || stable.Status != "done" || stable.PullRequestURL != "https://github.com/owner/repo/pull/77" {
-				t.Fatalf("stable status = %#v", stable)
-			}
-
-			events := fixture.trace(t)
-			assertGitHubBootstrap(t, events)
-			if got := journeyTrace(events); !equalTrace(got, test.wantTrace) {
-				t.Fatalf("journey trace =\n%q\nwant\n%q", got, test.wantTrace)
-			}
-			if got := prompts(events); !promptsMatchPrefixes(got, test.wantPromptOrder) {
-				t.Fatalf("agent prompt order = %q, want %q", got, test.wantPromptOrder)
-			}
-			assertSafeExternalInvocations(t, events)
-
-			before := len(events)
-			duplicate := fixture.run(t, "run", "github", "123")
-			if !strings.Contains(duplicate, "already exists: done/done") {
-				t.Fatalf("duplicate run output = %q", duplicate)
-			}
-			for _, event := range fixture.trace(t)[before:] {
-				if event.Tool == "gh" || event.Tool == "codex" || (event.Tool == "git" && strings.HasPrefix(strings.Join(event.Args, " "), "worktree add")) {
-					t.Fatalf("duplicate run repeated a workflow side effect: %#v", event)
+	for _, provider := range allProviders {
+		for _, test := range tests {
+			t.Run(provider.config+"/"+test.name, func(t *testing.T) {
+				wantTrace := retargetTrace(test.wantTrace, provider.tool)
+				fixture := newFixtureForProvider(t, test.mode, provider)
+				fixture.initialize(t)
+				output := fixture.run(t, "run", "github", "123")
+				if !strings.Contains(output, "Pull request created: https://github.com/owner/repo/pull/77") {
+					t.Fatalf("run output = %q", output)
 				}
-			}
-		})
+
+				stable := fixture.status(t)
+				if !strings.HasPrefix(stable.WorkflowID, "wf_") || stable.Phase != "done" || stable.Status != "done" || stable.PullRequestURL != "https://github.com/owner/repo/pull/77" {
+					t.Fatalf("stable status = %#v", stable)
+				}
+
+				events := fixture.trace(t)
+				assertGitHubBootstrap(t, events, provider.tool)
+				if got := journeyTrace(events); !equalTrace(got, wantTrace) {
+					t.Fatalf("journey trace =\n%q\nwant\n%q", got, wantTrace)
+				}
+				if got := prompts(events); !promptsMatchPrefixes(got, test.wantPromptOrder) {
+					t.Fatalf("agent prompt order = %q, want %q", got, test.wantPromptOrder)
+				}
+				assertSafeExternalInvocations(t, events, provider.tool)
+
+				before := len(events)
+				duplicate := fixture.run(t, "run", "github", "123")
+				if !strings.Contains(duplicate, "already exists: done/done") {
+					t.Fatalf("duplicate run output = %q", duplicate)
+				}
+				for _, event := range fixture.trace(t)[before:] {
+					if event.Tool == "gh" || event.Tool == provider.tool || (event.Tool == "git" && strings.HasPrefix(strings.Join(event.Args, " "), "worktree add")) {
+						t.Fatalf("duplicate run repeated a workflow side effect: %#v", event)
+					}
+				}
+			})
+		}
 	}
 }
 
 func TestHumanBlockerResumesThroughOneMarkedComment(t *testing.T) {
-	fixture := newFixture(t, scenarioBlocker)
+	for _, provider := range allProviders {
+		t.Run(provider.config, func(t *testing.T) {
+			humanBlockerResumesThroughOneMarkedComment(t, provider)
+		})
+	}
+}
+
+func humanBlockerResumesThroughOneMarkedComment(t *testing.T, provider agentProvider) {
+	fixture := newFixtureForProvider(t, scenarioBlocker, provider)
 	fixture.initialize(t)
 	first := fixture.run(t, "run", "github", "123")
 	if !strings.Contains(first, "Waiting for reply: https://github.com/owner/repo/issues/123#issuecomment-100") {
@@ -259,8 +297,16 @@ func TestRetryReconcilesPullRequestCreatedBeforeLocalFailure(t *testing.T) {
 }
 
 func TestCorrectionLoopsStopAtTheirDocumentedBounds(t *testing.T) {
+	for _, provider := range allProviders {
+		t.Run(provider.config, func(t *testing.T) {
+			correctionLoopsStopAtTheirDocumentedBounds(t, provider)
+		})
+	}
+}
+
+func correctionLoopsStopAtTheirDocumentedBounds(t *testing.T, provider agentProvider) {
 	t.Run("check repairs", func(t *testing.T) {
-		fixture := newFixture(t, scenarioCheckExhaust)
+		fixture := newFixtureForProvider(t, scenarioCheckExhaust, provider)
 		fixture.initialize(t)
 		output := fixture.runExpectError(t, "run", "github", "123")
 		if !strings.Contains(output, "still failed after 3 repair attempts") {
@@ -276,7 +322,7 @@ func TestCorrectionLoopsStopAtTheirDocumentedBounds(t *testing.T) {
 	})
 
 	t.Run("review attempts", func(t *testing.T) {
-		fixture := newFixture(t, scenarioReviewExhaust)
+		fixture := newFixtureForProvider(t, scenarioReviewExhaust, provider)
 		fixture.initialize(t)
 		output := fixture.run(t, "run", "github", "123")
 		if !strings.Contains(output, "Waiting for reply:") {
@@ -294,6 +340,11 @@ func TestCorrectionLoopsStopAtTheirDocumentedBounds(t *testing.T) {
 }
 
 func newFixture(t *testing.T, mode scenarioMode) fixture {
+	t.Helper()
+	return newFixtureForProvider(t, mode, codexProvider)
+}
+
+func newFixtureForProvider(t *testing.T, mode scenarioMode, provider agentProvider) fixture {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "controller")
 	origin := filepath.Join(t.TempDir(), "origin.git")
@@ -326,11 +377,11 @@ func newFixture(t *testing.T, mode scenarioMode) fixture {
 	if err := os.WriteFile(filepath.Join(root, ".fake", "real-git-path"), []byte(realGit+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"gh", "codex", "awdev-check", "git"} {
+	for _, name := range []string{"gh", provider.tool, "awdev-check", "git"} {
 		copyExecutable(t, fakeBinary, filepath.Join(fakeDir, executableName(name)))
 	}
 	writeJSON(t, filepath.Join(root, ".fake", "scenario.json"), map[string]scenarioMode{"mode": mode})
-	return fixture{root: root, fakeDir: fakeDir, checkBin: filepath.Join(fakeDir, executableName("awdev-check"))}
+	return fixture{root: root, fakeDir: fakeDir, checkBin: filepath.Join(fakeDir, executableName("awdev-check")), provider: provider}
 }
 
 func (fixture fixture) initialize(t *testing.T) {
@@ -338,11 +389,17 @@ func (fixture fixture) initialize(t *testing.T) {
 	fixture.runWithInput(t, "2\n", "init")
 	configuration := map[string]any{
 		"schema_version":  1,
-		"agent":           map[string]any{"provider": "codex", "timeout": "30s"},
-		"codex":           map[string]any{"binary": filepath.Join(fixture.fakeDir, executableName("codex"))},
+		"agent":           map[string]any{"provider": fixture.provider.config, "timeout": "30s"},
 		"checks":          []any{map[string]any{"name": "fixture", "command": []string{fixture.checkBin}, "timeout": "10s"}},
 		"review":          map[string]any{"max_attempts": 3},
 		"protected_paths": []string{},
+	}
+	agentBinary := filepath.Join(fixture.fakeDir, executableName(fixture.provider.tool))
+	switch fixture.provider.tool {
+	case "claude":
+		configuration["claude_code"] = map[string]any{"binary": agentBinary}
+	default:
+		configuration["codex"] = map[string]any{"binary": agentBinary}
 	}
 	writeJSON(t, filepath.Join(fixture.root, ".awdev", "config.json"), configuration)
 }
@@ -411,12 +468,12 @@ func (fixture fixture) trace(t *testing.T) []traceEvent {
 	return events
 }
 
-func assertGitHubBootstrap(t *testing.T, events []traceEvent) {
+func assertGitHubBootstrap(t *testing.T, events []traceEvent, agentTool string) {
 	t.Helper()
 	if len(events) < 5 {
 		t.Fatalf("external trace too short: %#v", events)
 	}
-	issueIndex, worktreeIndex, validationIndex, codexIndex := -1, -1, -1, -1
+	issueIndex, worktreeIndex, validationIndex, agentIndex := -1, -1, -1, -1
 	for index, event := range events {
 		if event.Phase != "start" {
 			continue
@@ -431,29 +488,29 @@ func assertGitHubBootstrap(t *testing.T, events []traceEvent) {
 		if event.Tool == "git" && worktreeIndex >= 0 && index > worktreeIndex && joined == "worktree list --porcelain" {
 			validationIndex = index
 		}
-		if event.Tool == "codex" && codexIndex < 0 {
-			codexIndex = index
+		if event.Tool == agentTool && agentIndex < 0 {
+			agentIndex = index
 		}
 	}
-	if issueIndex < 0 || worktreeIndex <= issueIndex || validationIndex <= worktreeIndex || codexIndex <= validationIndex {
-		t.Fatalf("bootstrap order issue=%d worktree=%d validation=%d codex=%d", issueIndex, worktreeIndex, validationIndex, codexIndex)
+	if issueIndex < 0 || worktreeIndex <= issueIndex || validationIndex <= worktreeIndex || agentIndex <= validationIndex {
+		t.Fatalf("bootstrap order issue=%d worktree=%d validation=%d agent=%d", issueIndex, worktreeIndex, validationIndex, agentIndex)
 	}
 	if events[validationIndex].ManifestPresent {
 		t.Fatalf("initial manifest existed before worktree validation: %#v", events[validationIndex])
 	}
-	firstCodex := events[codexIndex]
-	if !strings.HasPrefix(firstCodex.Stdin, "Create an implementation specification") || !firstCodex.ManifestPresent || !firstCodex.WorktreeRegistered {
-		t.Fatalf("first specification event lacks durable validated bootstrap: %#v", firstCodex)
+	firstAgent := events[agentIndex]
+	if !strings.HasPrefix(firstAgent.Stdin, "Create an implementation specification") || !firstAgent.ManifestPresent || !firstAgent.WorktreeRegistered {
+		t.Fatalf("first specification event lacks durable validated bootstrap: %#v", firstAgent)
 	}
 }
 
-func assertSafeExternalInvocations(t *testing.T, events []traceEvent) {
+func assertSafeExternalInvocations(t *testing.T, events []traceEvent, agentTool string) {
 	t.Helper()
 	starts := map[string]int{}
 	completions := map[string]int{}
 	capturedOutput := map[string]bool{}
 	for _, event := range events {
-		if event.Phase == "complete" && (event.Tool == "gh" || event.Tool == "codex") {
+		if event.Phase == "complete" && (event.Tool == "gh" || event.Tool == agentTool) {
 			completions[event.Tool]++
 			capturedOutput[event.Tool] = capturedOutput[event.Tool] || event.Stdout != "" || event.Stderr != ""
 			if event.ExitCode == nil {
@@ -464,6 +521,7 @@ func assertSafeExternalInvocations(t *testing.T, events []traceEvent) {
 		if event.Phase != "start" {
 			continue
 		}
+		joined := strings.Join(event.Args, " ")
 		switch event.Tool {
 		case "gh":
 			starts[event.Tool]++
@@ -472,7 +530,6 @@ func assertSafeExternalInvocations(t *testing.T, events []traceEvent) {
 			}
 		case "codex":
 			starts[event.Tool]++
-			joined := strings.Join(event.Args, " ")
 			for _, required := range []string{"exec", "--json", "--sandbox", "--output-schema", "--cd", "--output-last-message"} {
 				if !strings.Contains(joined, required) {
 					t.Errorf("codex argv %q lacks %q", joined, required)
@@ -484,19 +541,39 @@ func assertSafeExternalInvocations(t *testing.T, events []traceEvent) {
 			if strings.Contains(joined, "--danger") || strings.Contains(joined, "{{.WorkflowID}}") {
 				t.Errorf("issue data escaped into argv: %q", joined)
 			}
+		case "claude":
+			starts[event.Tool]++
+			for _, required := range []string{"--print", "--output-format stream-json", "--verbose", "--json-schema", "--permission-mode", "--permission-prompts none", "--session-id", "--add-dir"} {
+				if !strings.Contains(joined, required) {
+					t.Errorf("claude argv %q lacks %q", joined, required)
+				}
+			}
+			if event.Worker != "1" {
+				t.Errorf("claude invocation missing AWDEV_WORKER guard: %#v", event)
+			}
+			if event.Stdin == "" || strings.HasSuffix(joined, " -") {
+				t.Errorf("claude prompt is not a guarded stdin invocation: %#v", event)
+			}
+			if strings.Contains(joined, "--danger") || strings.Contains(joined, "{{.WorkflowID}}") {
+				t.Errorf("issue data escaped into argv: %q", joined)
+			}
 		}
 	}
-	for _, tool := range []string{"gh", "codex"} {
+	for _, tool := range []string{"gh", agentTool} {
 		if starts[tool] != completions[tool] || !capturedOutput[tool] {
 			t.Errorf("%s trace starts=%d completions=%d captured_output=%t", tool, starts[tool], completions[tool], capturedOutput[tool])
 		}
 	}
 }
 
+func isAgentTool(tool string) bool {
+	return tool == "codex" || tool == "claude"
+}
+
 func prompts(events []traceEvent) []string {
 	var result []string
 	for _, event := range events {
-		if event.Phase != "start" || event.Tool != "codex" {
+		if event.Phase != "start" || !isAgentTool(event.Tool) {
 			continue
 		}
 		line, _, _ := strings.Cut(event.Stdin, "\n")
@@ -535,8 +612,8 @@ func journeyTrace(events []traceEvent) []string {
 			labels = append(labels, "git:worktree-add")
 		case event.Tool == "git" && worktreeAdded && joined == "worktree list --porcelain":
 			labels = append(labels, "git:worktree-validate")
-		case event.Tool == "codex":
-			labels = append(labels, codexTraceLabel(event.Stdin))
+		case isAgentTool(event.Tool):
+			labels = append(labels, agentTraceLabel(event.Tool, event.Stdin))
 		case event.Tool == "awdev-check":
 			labels = append(labels, "check")
 		case event.Tool == "git" && strings.HasPrefix(joined, "commit --no-gpg-sign"):
@@ -552,22 +629,22 @@ func journeyTrace(events []traceEvent) []string {
 	return labels
 }
 
-func codexTraceLabel(prompt string) string {
+func agentTraceLabel(tool, prompt string) string {
 	switch {
 	case strings.HasPrefix(prompt, "Create an implementation specification"):
-		return "codex:spec"
+		return tool + ":spec"
 	case strings.HasPrefix(prompt, "Implement the supplied specification"):
-		return "codex:implementation"
+		return tool + ":implementation"
 	case strings.HasPrefix(prompt, "Repair the implementation"):
-		return "codex:check-repair"
+		return tool + ":check-repair"
 	case strings.HasPrefix(prompt, "Review the current worktree"):
-		return "codex:review"
+		return tool + ":review"
 	case strings.HasPrefix(prompt, "Correct the implementation"):
-		return "codex:review-correction"
+		return tool + ":review-correction"
 	case strings.HasPrefix(prompt, "Continue the recorded workflow phase"):
-		return "codex:resume"
+		return tool + ":resume"
 	default:
-		return "codex:unknown"
+		return tool + ":unknown"
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
+	"github.com/agenticworkflowdev/cli/internal/agent/claudecode"
 	"github.com/agenticworkflowdev/cli/internal/agent/codex"
 	"github.com/agenticworkflowdev/cli/internal/assets"
 	"github.com/agenticworkflowdev/cli/internal/checks"
@@ -105,9 +106,6 @@ func newWorkflowRuntime(
 	if err != nil {
 		return workflowRuntime{}, err
 	}
-	if configuration.Agent.Provider != agent.ProviderCodex {
-		return workflowRuntime{}, fmt.Errorf("agent provider %q is unavailable", configuration.Agent.Provider)
-	}
 	render := func(name string) (*prompt.Renderer, error) {
 		return prompt.NewRenderer(name, installed.Prompts[name].Contents)
 	}
@@ -143,13 +141,13 @@ func newWorkflowRuntime(
 	if err != nil {
 		return workflowRuntime{}, err
 	}
-	codexRunner, err := codex.NewRunner(configuration.Codex.Binary, processRunner)
+	agentRunner, err := newAgentRunner(configuration, processRunner)
 	if err != nil {
 		return workflowRuntime{}, err
 	}
-	specificationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Specification agent\n  └─ writing specification..."}
-	implementationRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Implementation agent\n  └─ implementing changes..."}
-	reviewRunner := &progressAgentRunner{runner: codexRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Review agent"}
+	specificationRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Specification agent\n  └─ writing specification..."}
+	implementationRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Implementation agent\n  └─ implementing changes..."}
+	reviewRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Review agent"}
 	transitionService := state.NewTransitionService(manifestStore)
 	specificationService := workflow.NewSpecificationService(
 		manifestStore, transitionService, specificationPrompt, specificationRunner, resultDecoder,
@@ -187,6 +185,19 @@ func newWorkflowRuntime(
 		run: runService, resume: resumeService,
 		retry: workflow.NewRetryService(state.NewFileLocker(), manifestReader, publication),
 	}, nil
+}
+
+// newAgentRunner selects the configured provider adapter behind the
+// provider-neutral agent.Runner contract.
+func newAgentRunner(configuration config.Config, processRunner processrun.Runner) (agent.Runner, error) {
+	switch configuration.Agent.Provider {
+	case agent.ProviderCodex:
+		return codex.NewRunner(configuration.Codex.Binary, processRunner)
+	case agent.ProviderClaudeCode:
+		return claudecode.NewRunner(configuration.ClaudeCode.Binary, configuration.ClaudeCode.Model, processRunner)
+	default:
+		return nil, fmt.Errorf("agent provider %q is unavailable", configuration.Agent.Provider)
+	}
 }
 
 type reportingFetcher struct {

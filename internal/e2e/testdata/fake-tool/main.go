@@ -85,7 +85,7 @@ func main() {
 		PromptDisabled: os.Getenv("GH_PROMPT_DISABLED"), NoColor: os.Getenv("NO_COLOR"), Worker: os.Getenv("AWDEV_WORKER"),
 		ManifestPresent: oneManifestExists(root),
 	}
-	if tool == "codex" {
+	if tool == "codex" || tool == "claude" {
 		info, statErr := os.Stat(filepath.Join(event.Directory, ".git"))
 		event.WorktreeRegistered = statErr == nil && info.Mode().IsRegular()
 	}
@@ -98,6 +98,8 @@ func main() {
 		result = runGH(root, os.Args[1:], input)
 	case "codex":
 		result = runCodex(root, os.Args[1:], input)
+	case "claude":
+		result = runClaude(root, os.Args[1:], input)
 	case "awdev-check":
 		result = runCheck()
 	case "git":
@@ -243,6 +245,168 @@ func runCodex(root string, args []string, input []byte) toolResult {
 		fatal(err)
 	}
 	return toolResult{stdout: fmt.Sprintf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", "fake-"+strconv.FormatInt(time.Now().UnixNano(), 10))}
+}
+
+// runClaude imitates the Claude Code CLI as the claudecode adapter drives it:
+// stream-json events on stdout whose terminal {"type":"result"} event carries the
+// schema-shaped structured_output. The write-side effects mirror runCodex exactly
+// so downstream checks and diff-scope logic behave identically.
+func runClaude(root string, args []string, input []byte) toolResult {
+	for _, required := range []string{"--print", "--verbose", "--json-schema", "--add-dir"} {
+		if !hasArg(args, required) {
+			fatal(fmt.Errorf("unexpected claude argv, missing %s: %q", required, args))
+		}
+	}
+	if got := valueAfter(args, "--output-format"); got != "stream-json" {
+		fatal(fmt.Errorf("claude --output-format = %q, want stream-json", got))
+	}
+	if got := valueAfter(args, "--permission-prompts"); got != "none" {
+		fatal(fmt.Errorf("claude --permission-prompts = %q, want none", got))
+	}
+	if strings.TrimSpace(valueAfter(args, "--json-schema")) == "" {
+		fatal(fmt.Errorf("claude --json-schema is empty: %q", args))
+	}
+	sessionID := valueAfter(args, "--session-id")
+	worktree := valueAfter(args, "--add-dir")
+	if args[len(args)-1] != worktree {
+		fatal(fmt.Errorf("claude prompt must arrive on stdin, not argv: %q", args))
+	}
+	if len(input) == 0 {
+		fatal(fmt.Errorf("claude prompt on stdin is empty"))
+	}
+	access := "workspace-write"
+	switch mode := valueAfter(args, "--permission-mode"); mode {
+	case "plan":
+		access = "read-only"
+	case "acceptEdits":
+		access = "workspace-write"
+	default:
+		fatal(fmt.Errorf("unexpected claude --permission-mode %q", mode))
+	}
+
+	settings := readScenario(root)
+	if settings.Mode == scenarioCancellation {
+		// Real claude flushes the system/init line, then the stream simply stops
+		// when SIGTERM arrives with no terminal result event.
+		emitClaudeEvent(map[string]any{
+			"type": "system", "subtype": "init", "session_id": sessionID,
+			"cwd": mustGetwd(), "model": "claude-fake", "permissionMode": "plan",
+			"tools": []string{"Read", "Bash", "StructuredOutput"},
+		})
+		child := exec.Command(os.Args[0], "descendant")
+		if err := child.Start(); err != nil {
+			fatal(err)
+		}
+		writeJSON(filepath.Join(root, ".fake", "cancellation-pids.json"), map[string]int{"parent": os.Getpid(), "child": child.Process.Pid})
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+
+	prompt := string(input)
+	result := `{"status":"completed","summary":"done","question":""}`
+
+	switch {
+	case strings.HasPrefix(prompt, "Create an implementation specification"):
+		if settings.Mode == scenarioBlocker {
+			result = `{"status":"blocked","summary":"","question":"Which compatibility behavior should be used?"}`
+		} else {
+			writeSpec(prompt)
+		}
+	case strings.HasPrefix(prompt, "Continue the recorded workflow phase"):
+		writeSpec(prompt)
+	case strings.HasPrefix(prompt, "Implement the supplied specification"):
+		writeFile("implementation.txt", "implemented\n")
+		if settings.Mode == scenarioCheckFix || settings.Mode == scenarioCheckExhaust {
+			writeFile("needs-check-fix", "repair me\n")
+		}
+	case strings.HasPrefix(prompt, "Repair the implementation"):
+		if settings.Mode != scenarioCheckExhaust {
+			_ = os.Remove("needs-check-fix")
+			writeFile("implementation.txt", "implemented and check-fixed\n")
+		}
+	case strings.HasPrefix(prompt, "Correct the implementation"):
+		writeFile("implementation.txt", "implemented and review-fixed\n")
+		writeFile(".review-fixed", "yes\n")
+	case strings.HasPrefix(prompt, "Review the current worktree"):
+		if access != "read-only" {
+			fatal(fmt.Errorf("review access = %q", access))
+		}
+		if settings.Mode == scenarioReviewFix {
+			if _, err := os.Stat(".review-fixed"); os.IsNotExist(err) {
+				result = `{"approved":false,"findings":[{"severity":"high","path":"implementation.txt","line":1,"message":"Needs correction"}]}`
+			} else if err != nil {
+				fatal(err)
+			} else {
+				result = `{"approved":true,"findings":[]}`
+			}
+		} else if settings.Mode == scenarioReviewExhaust {
+			result = `{"approved":false,"findings":[{"severity":"high","path":"implementation.txt","line":1,"message":"Still needs direction"}]}`
+		} else {
+			result = `{"approved":true,"findings":[]}`
+		}
+	default:
+		fatal(fmt.Errorf("unexpected claude prompt: %.80q", prompt))
+	}
+
+	permissionMode := "acceptEdits"
+	if access == "read-only" {
+		permissionMode = "plan"
+	}
+	var stream bytes.Buffer
+	stream.WriteString(encodeClaudeEvent(map[string]any{
+		"type": "system", "subtype": "init", "session_id": sessionID,
+		"cwd": mustGetwd(), "model": "claude-fake", "permissionMode": permissionMode,
+		"tools": []string{"Read", "Bash", "Edit", "Write", "StructuredOutput"},
+	}))
+	stream.WriteString(encodeClaudeEvent(map[string]any{
+		"type": "assistant", "session_id": sessionID,
+		"message": map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "Recorded the structured result."},
+		}},
+	}))
+	stream.WriteString(encodeClaudeEvent(map[string]any{
+		"type": "assistant", "session_id": sessionID,
+		"message": map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_fake", "name": "StructuredOutput", "input": json.RawMessage(result)},
+		}},
+	}))
+	stream.WriteString(encodeClaudeEvent(map[string]any{
+		"type": "user", "session_id": sessionID,
+		"message": map[string]any{"role": "user", "content": []any{
+			map[string]any{"tool_use_id": "toolu_fake", "type": "tool_result", "content": "Structured output provided successfully"},
+		}},
+		"tool_use_result": "Structured output provided successfully",
+	}))
+	stream.WriteString(encodeClaudeEvent(map[string]any{
+		"type": "result", "subtype": "success", "session_id": sessionID,
+		"is_error": false, "api_error_status": nil, "terminal_reason": "completed",
+		"stop_reason": "tool_use", "num_turns": 2, "permission_denials": []any{},
+		"result": result, "structured_output": json.RawMessage(result),
+	}))
+	return toolResult{stdout: stream.String()}
+}
+
+func encodeClaudeEvent(event map[string]any) string {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		fatal(err)
+	}
+	return string(encoded) + "\n"
+}
+
+func emitClaudeEvent(event map[string]any) {
+	_, _ = os.Stdout.WriteString(encodeClaudeEvent(event))
+	_ = os.Stdout.Sync()
+}
+
+func hasArg(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func runCheck() toolResult {

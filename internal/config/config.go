@@ -29,6 +29,7 @@ type Config struct {
 	SchemaVersion  int
 	Agent          Agent
 	Codex          Codex
+	ClaudeCode     ClaudeCode
 	Checks         []checks.Definition
 	Review         Review
 	ProtectedPaths []string
@@ -45,18 +46,25 @@ type Codex struct {
 	Binary string
 }
 
+// ClaudeCode configures direct Claude Code process invocation.
+type ClaudeCode struct {
+	Binary string
+	Model  string
+}
+
 // Review bounds independent review-agent invocations.
 type Review struct {
 	MaxAttempts int
 }
 
 type rawConfig struct {
-	SchemaVersion  *int        `json:"schema_version"`
-	Agent          *rawAgent   `json:"agent"`
-	Codex          *rawCodex   `json:"codex"`
-	Checks         *[]rawCheck `json:"checks"`
-	Review         *rawReview  `json:"review"`
-	ProtectedPaths []string    `json:"protected_paths"`
+	SchemaVersion  *int           `json:"schema_version"`
+	Agent          *rawAgent      `json:"agent"`
+	Codex          *rawCodex      `json:"codex"`
+	ClaudeCode     *rawClaudeCode `json:"claude_code"`
+	Checks         *[]rawCheck    `json:"checks"`
+	Review         *rawReview     `json:"review"`
+	ProtectedPaths []string       `json:"protected_paths"`
 }
 
 type rawAgent struct {
@@ -66,6 +74,11 @@ type rawAgent struct {
 
 type rawCodex struct {
 	Binary string `json:"binary"`
+}
+
+type rawClaudeCode struct {
+	Binary string `json:"binary"`
+	Model  string `json:"model"`
 }
 
 type rawCheck struct {
@@ -126,19 +139,42 @@ func Parse(contents []byte) (Config, error) {
 	if raw.Agent == nil {
 		return Config{}, fmt.Errorf("agent is required")
 	}
-	if agent.Provider(raw.Agent.Provider) != agent.ProviderCodex {
-		return Config{}, fmt.Errorf("agent.provider must be codex")
+	provider := agent.Provider(raw.Agent.Provider)
+	if provider != agent.ProviderCodex && provider != agent.ProviderClaudeCode {
+		return Config{}, fmt.Errorf("agent.provider must be codex or claude-code")
 	}
 	agentTimeout, err := positiveDuration(raw.Agent.Timeout, defaultAgentTimeout)
 	if err != nil {
 		return Config{}, fmt.Errorf("agent.timeout must be a positive duration")
 	}
-	if raw.Codex == nil {
-		return Config{}, fmt.Errorf("codex is required")
+
+	var codexConfig Codex
+	var claudeCodeConfig ClaudeCode
+	switch provider {
+	case agent.ProviderCodex:
+		if raw.Codex == nil {
+			return Config{}, fmt.Errorf("codex is required")
+		}
+		if strings.TrimSpace(raw.Codex.Binary) == "" {
+			return Config{}, fmt.Errorf("codex.binary must not be empty")
+		}
+		codexConfig = Codex{Binary: raw.Codex.Binary}
+		if raw.ClaudeCode != nil {
+			claudeCodeConfig = ClaudeCode{Binary: raw.ClaudeCode.Binary, Model: raw.ClaudeCode.Model}
+		}
+	case agent.ProviderClaudeCode:
+		if raw.ClaudeCode == nil {
+			return Config{}, fmt.Errorf("claude_code is required")
+		}
+		if strings.TrimSpace(raw.ClaudeCode.Binary) == "" {
+			return Config{}, fmt.Errorf("claude_code.binary must not be empty")
+		}
+		claudeCodeConfig = ClaudeCode{Binary: raw.ClaudeCode.Binary, Model: raw.ClaudeCode.Model}
+		if raw.Codex != nil {
+			codexConfig = Codex{Binary: raw.Codex.Binary}
+		}
 	}
-	if strings.TrimSpace(raw.Codex.Binary) == "" {
-		return Config{}, fmt.Errorf("codex.binary must not be empty")
-	}
+
 	if raw.Checks == nil {
 		return Config{}, fmt.Errorf("checks is required")
 	}
@@ -183,8 +219,9 @@ func Parse(contents []byte) (Config, error) {
 
 	return Config{
 		SchemaVersion:  *raw.SchemaVersion,
-		Agent:          Agent{Provider: agent.Provider(raw.Agent.Provider), Timeout: agentTimeout},
-		Codex:          Codex{Binary: raw.Codex.Binary},
+		Agent:          Agent{Provider: provider, Timeout: agentTimeout},
+		Codex:          codexConfig,
+		ClaudeCode:     claudeCodeConfig,
 		Checks:         checkDefinitions,
 		Review:         Review{MaxAttempts: maxAttempts},
 		ProtectedPaths: append([]string(nil), raw.ProtectedPaths...),

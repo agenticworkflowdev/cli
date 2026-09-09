@@ -1,0 +1,1 @@
+Error: --json-schema is not valid JSON: JSON Parse error: Property name must be a string literal

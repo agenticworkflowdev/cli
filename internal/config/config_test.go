@@ -56,6 +56,49 @@ func TestParseAppliesDefaultsAndPreservesArgumentArrays(t *testing.T) {
 	}
 }
 
+const validClaudeCodeConfig = `{
+  "schema_version": 1,
+  "agent": {"provider": "claude-code"},
+  "claude_code": {"binary": "claude"},
+  "checks": [{"name": "tests", "directory": "services/api", "command": ["go", "test", "./..."]}],
+  "review": {},
+  "protected_paths": []
+}`
+
+func TestParseAcceptsClaudeCodeProvider(t *testing.T) {
+	got, err := config.Parse([]byte(validClaudeCodeConfig))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if got.Agent.Provider != agent.ProviderClaudeCode {
+		t.Errorf("agent provider = %q, want claude-code", got.Agent.Provider)
+	}
+	if got.ClaudeCode.Binary != "claude" {
+		t.Errorf("ClaudeCode binary = %q, want claude", got.ClaudeCode.Binary)
+	}
+	if got.ClaudeCode.Model != "" {
+		t.Errorf("ClaudeCode model = %q, want empty default", got.ClaudeCode.Model)
+	}
+	if got.Codex.Binary != "" {
+		t.Errorf("Codex binary = %q, want empty when provider is claude-code", got.Codex.Binary)
+	}
+	if got.Agent.Timeout != 30*time.Minute {
+		t.Errorf("agent timeout = %v, want 30m", got.Agent.Timeout)
+	}
+}
+
+func TestParseAcceptsOptionalClaudeCodeModel(t *testing.T) {
+	input := strings.Replace(validClaudeCodeConfig, `"binary": "claude"`, `"binary": "claude", "model": "claude-sonnet-4"`, 1)
+	got, err := config.Parse([]byte(input))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if got.ClaudeCode.Model != "claude-sonnet-4" {
+		t.Errorf("ClaudeCode model = %q, want claude-sonnet-4", got.ClaudeCode.Model)
+	}
+}
+
 func TestParseRejectsInvalidConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -66,9 +109,11 @@ func TestParseRejectsInvalidConfiguration(t *testing.T) {
 		{name: "trailing document", input: validConfig + `{}`, wantErr: "single JSON object"},
 		{name: "unsupported schema", input: strings.Replace(validConfig, `"schema_version": 1`, `"schema_version": 2`, 1), wantErr: "unsupported schema_version 2"},
 		{name: "missing agent", input: strings.Replace(validConfig, "  \"agent\": {\"provider\": \"codex\"},\n", "", 1), wantErr: "agent is required"},
-		{name: "unsupported provider", input: strings.Replace(validConfig, `"provider": "codex"`, `"provider": "claude-code"`, 1), wantErr: "agent.provider must be codex"},
+		{name: "unsupported provider", input: strings.Replace(validConfig, `"provider": "codex"`, `"provider": "gemini"`, 1), wantErr: "agent.provider must be codex or claude-code"},
 		{name: "missing codex", input: `{"schema_version":1,"agent":{"provider":"codex"},"checks":[],"review":{}}`, wantErr: "codex is required"},
 		{name: "empty binary", input: strings.Replace(validConfig, `"binary": "codex"`, `"binary": "  "`, 1), wantErr: "codex.binary must not be empty"},
+		{name: "claude-code missing claude_code section", input: `{"schema_version":1,"agent":{"provider":"claude-code"},"checks":[],"review":{}}`, wantErr: "claude_code is required"},
+		{name: "claude-code empty binary", input: `{"schema_version":1,"agent":{"provider":"claude-code"},"claude_code":{"binary":"  "},"checks":[],"review":{}}`, wantErr: "claude_code.binary must not be empty"},
 		{name: "empty check command", input: strings.Replace(validConfig, `["go", "test", "./..."]`, `[]`, 1), wantErr: "checks[0].command must not be empty"},
 		{name: "empty executable", input: strings.Replace(validConfig, `["go", "test", "./..."]`, `["", "test"]`, 1), wantErr: "checks[0].command[0] must not be empty"},
 		{name: "review zero", input: strings.Replace(validConfig, `"review": {}`, `"review": {"max_attempts": 0}`, 1), wantErr: "review.max_attempts must be between 1 and 10"},

@@ -1,0 +1,62 @@
+{
+  "name": "read-only",
+  "expectation": "plan mode auto-denies the write; independent check finds no marker; run still exits 0",
+  "arguments": [
+    "$CLAUDE",
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--json-schema",
+    "$SCHEMA",
+    "--permission-mode",
+    "plan",
+    "--permission-prompts",
+    "none",
+    "--model",
+    "claude-haiku-4-5-20251001",
+    "--session-id",
+    "c170722c-f4f8-460d-8ffb-705645ce7e61",
+    "--add-dir",
+    "$WORKSPACE"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CLAUDE_CONFIG_DIR",
+    "HOME",
+    "PATH"
+  ],
+  "permission_mode": "plan",
+  "exit_code": 0,
+  "outcome": "completed",
+  "session_id": "$SESSION",
+  "session_id_consistent": true,
+  "event_types": [
+    "system",
+    "rate_limit_event",
+    "assistant",
+    "user",
+    "result"
+  ],
+  "system_subtypes": [
+    "init",
+    "thinking_tokens",
+    "permission_denied"
+  ],
+  "result_event_present": true,
+  "result_is_error": false,
+  "result_subtype": "success",
+  "result_terminal_reason": "completed",
+  "structured_output_present": true,
+  "structured_output_status": "completed",
+  "permission_denials": 1,
+  "stdout_bytes": 22343,
+  "stderr_bytes": 0,
+  "largest_jsonl_event_bytes": 5926,
+  "final_output_present": true,
+  "final_output_bytes": 329,
+  "workspace_marker_expected": false,
+  "workspace_marker_present": false,
+  "workspace_marker_matched": false
+}

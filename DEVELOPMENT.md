@@ -72,7 +72,8 @@ go run ./cmd/awdev retry github 123
 
 End-to-end development requires a non-shallow Git checkout with an `origin`
 matching the repository reported by an authenticated GitHub CLI, plus an
-authenticated Codex CLI. The commands run in the foreground; cancellation
+authenticated CLI for the configured agent (Codex or Claude Code). The commands
+run in the foreground; cancellation
 terminates the active child process tree and leaves durable state for
 inspection. See [README.md](README.md) for configuration and lifecycle details
 and [docs/manual-recovery.md](docs/manual-recovery.md) before altering failed
@@ -113,5 +114,6 @@ go build ./...
 ```
 
 The `internal/e2e` package builds the real executable, uses real temporary Git
-repositories with local bare origins, and substitutes deterministic `gh` and
-`codex` executables. It does not require network access or live credentials.
+repositories with local bare origins, and substitutes deterministic `gh`,
+`codex`, and `claude` executables. It does not require network access or live
+credentials.

@@ -14,7 +14,15 @@ import (
 )
 
 func TestInterruptTerminatesFakeAgentProcessTree(t *testing.T) {
-	fixture := newFixture(t, scenarioCancellation)
+	for _, provider := range allProviders {
+		t.Run(provider.config, func(t *testing.T) {
+			interruptTerminatesFakeAgentProcessTree(t, provider)
+		})
+	}
+}
+
+func interruptTerminatesFakeAgentProcessTree(t *testing.T, provider agentProvider) {
+	fixture := newFixtureForProvider(t, scenarioCancellation, provider)
 	fixture.initialize(t)
 	command := fixture.command("run", "github", "123")
 	var output strings.Builder

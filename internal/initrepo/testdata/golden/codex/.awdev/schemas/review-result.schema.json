@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenticworkflow.dev/schemas/review-result.schema.json",
+  "title": "Review result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approved", "findings"],
+  "properties": {
+    "approved": {"type": "boolean"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "path", "line", "message"],
+        "properties": {
+          "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+          "path": {"type": ["string", "null"]},
+          "line": {"type": ["integer", "null"], "minimum": 1},
+          "message": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

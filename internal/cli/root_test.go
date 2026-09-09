@@ -44,29 +44,29 @@ func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 
 	tests := []struct {
-		name       string
-		input      string
-		wantAgent  string
-		wantOutput string
+		name         string
+		input        string
+		wantProvider agent.Provider
+		wantOutput   string
 	}{
-		{name: "Codex", input: "2\n", wantAgent: "Codex", wantOutput: "Initialization complete. AWDev is configured to use Codex.\n"},
-		{name: "Claude Code", input: "1\n", wantAgent: "Claude Code", wantOutput: "Claude Code is not implemented yet.\n"},
+		{name: "Codex", input: "2\n", wantProvider: agent.ProviderCodex, wantOutput: "Initialization complete. AWDev is configured to use Codex.\n"},
+		{name: "Claude Code", input: "1\n", wantProvider: agent.ProviderClaudeCode, wantOutput: "Initialization complete. AWDev is configured to use Claude Code.\n"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			servicesCalled := false
+			initializeCalled := false
 			var initializedProvider agent.Provider
 			services := cli.Services{
-				WorkingDirectory: func() (string, error) { servicesCalled = true; return "/repo", nil },
-				DiscoverRoot:     func(context.Context, string) (string, error) { servicesCalled = true; return "/repo", nil },
+				WorkingDirectory: func() (string, error) { return "/repo", nil },
+				DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 				Initialize: func(_ string, provider agent.Provider, _ initrepo.Options) (initrepo.Result, error) {
-					servicesCalled = true
+					initializeCalled = true
 					initializedProvider = provider
 					return initrepo.Result{AwdevDirectoryCreated: true, Gitignore: initrepo.GitignoreCreated}, nil
 				},
-				ValidateConfig: func(string) error { servicesCalled = true; return nil },
+				ValidateConfig: func(string) error { return nil },
 			}
 			command := cli.NewRootCommand(services)
 			command.SetIn(strings.NewReader(test.input))
@@ -86,16 +86,13 @@ func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 				}
 			}
 			if test.wantOutput != "" && !strings.Contains(output.String(), test.wantOutput) {
-				t.Errorf("output %q does not contain exact unavailable message %q", output.String(), test.wantOutput)
+				t.Errorf("output %q does not contain completion message %q", output.String(), test.wantOutput)
 			}
-			if test.wantAgent == "Claude Code" && servicesCalled {
-				t.Fatal("Claude Code selection performed repository side effects")
+			if !initializeCalled {
+				t.Fatalf("%s selection did not initialize the repository", test.name)
 			}
-			if test.wantAgent == "Codex" && !servicesCalled {
-				t.Fatal("Codex selection did not initialize the repository")
-			}
-			if test.wantAgent == "Codex" && initializedProvider != agent.ProviderCodex {
-				t.Fatalf("initialized provider = %q, want codex", initializedProvider)
+			if initializedProvider != test.wantProvider {
+				t.Fatalf("initialized provider = %q, want %q", initializedProvider, test.wantProvider)
 			}
 		})
 	}
@@ -190,12 +187,16 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		input        string
+		metadataPath string
 		instructions initrepo.FileStatus
 		metadata     initrepo.FileStatus
 		want         []string
 	}{
 		{
-			name:         "both created",
+			name:         "codex both created",
+			input:        "2\n",
+			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileCreated,
 			metadata:     initrepo.FileCreated,
 			want: []string{
@@ -204,7 +205,9 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 			},
 		},
 		{
-			name:         "both retained",
+			name:         "codex both retained",
+			input:        "2\n",
+			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileRetained,
 			metadata:     initrepo.FileRetained,
 			want: []string{
@@ -213,7 +216,9 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 			},
 		},
 		{
-			name:         "instructions retained",
+			name:         "codex instructions retained",
+			input:        "2\n",
+			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileRetained,
 			metadata:     initrepo.FileCreated,
 			want: []string{
@@ -222,12 +227,25 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 			},
 		},
 		{
-			name:         "metadata retained",
+			name:         "codex metadata retained",
+			input:        "2\n",
+			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileCreated,
 			metadata:     initrepo.FileRetained,
 			want: []string{
 				"Created .agents/skills/awdev/SKILL.md.",
 				".agents/skills/awdev/agents/openai.yaml already exists; retained unchanged.",
+			},
+		},
+		{
+			name:         "claude-code both created",
+			input:        "1\n",
+			metadataPath: ".agents/skills/awdev/agents/anthropic.yaml",
+			instructions: initrepo.FileCreated,
+			metadata:     initrepo.FileCreated,
+			want: []string{
+				"Created .agents/skills/awdev/SKILL.md.",
+				"Created .agents/skills/awdev/agents/anthropic.yaml.",
 			},
 		},
 	}
@@ -245,6 +263,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 						Skill: &initrepo.SkillResult{
 							Instructions: test.instructions,
 							Metadata:     test.metadata,
+							MetadataPath: test.metadataPath,
 						},
 					}, nil
 				},
@@ -252,7 +271,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 			}
 			var output bytes.Buffer
 			command := cli.NewRootCommand(services)
-			command.SetIn(strings.NewReader("2\n"))
+			command.SetIn(strings.NewReader(test.input))
 			command.SetOut(&output)
 			command.SetArgs([]string{"init", "--with-skill"})
 
