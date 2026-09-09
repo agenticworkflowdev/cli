@@ -97,6 +97,20 @@ Checks run in the generated worktree with credential variables removed. A
 failed implementation check can receive up to three automatic repair attempts;
 the configured review cap controls review/correction attempts.
 
+## Prompt templates
+
+`awdev init` installs six editable templates in `.awdev/prompts/`: specification,
+implementation, review, check repair, review repair, and blocked-workflow
+continuation. They discover the target repository's languages, architecture,
+and tools instead of assuming frontend/backend folders or a particular stack.
+See [prompt template guidance](docs/prompt-templates.md) for their responsibilities,
+inputs, and customization rules.
+
+Initialization preserves existing templates. Updating the CLI does not overwrite
+prompts already installed in a repository; compare and merge the new defaults
+manually when upgrading. Configure meaningful project checks in
+`.awdev/config.json`: the shipped whitespace check does not verify behavior.
+
 ## State, failures, and recovery
 
 Controller state remains in the original checkout:
