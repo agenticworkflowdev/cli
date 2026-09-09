@@ -21,11 +21,6 @@ func newInitCommand(services Services) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if provider == agent.ProviderClaudeCode {
-				_, err := fmt.Fprintln(command.OutOrStdout(), "Claude Code is not implemented yet.")
-				return err
-			}
-
 			root, err := discoverRoot(command.Context(), services)
 			if err != nil {
 				return err
@@ -50,7 +45,7 @@ func newInitCommand(services Services) *cobra.Command {
 			return writeInitializationResult(command, result, provider)
 		},
 	}
-	command.Flags().BoolVar(&withSkill, "with-skill", false, "install the explicit-only repository Codex skill")
+	command.Flags().BoolVar(&withSkill, "with-skill", false, "install the explicit-only repository agent skill")
 	return command
 }
 
@@ -84,7 +79,11 @@ func writeInitializationResult(command *cobra.Command, result initrepo.Result, p
 		if err := writeSkillFileResult(writer, ".agents/skills/awdev/SKILL.md", result.Skill.Instructions); err != nil {
 			return err
 		}
-		if err := writeSkillFileResult(writer, ".agents/skills/awdev/agents/openai.yaml", result.Skill.Metadata); err != nil {
+		metadataPath := result.Skill.MetadataPath
+		if metadataPath == "" {
+			metadataPath = ".agents/skills/awdev/agents/openai.yaml"
+		}
+		if err := writeSkillFileResult(writer, metadataPath, result.Skill.Metadata); err != nil {
 			return err
 		}
 	}

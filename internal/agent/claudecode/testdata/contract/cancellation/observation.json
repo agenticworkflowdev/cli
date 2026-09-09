@@ -1,0 +1,52 @@
+{
+  "name": "cancellation",
+  "expectation": "SIGTERM after ~5s truncates the stream with no terminal result event; classified from ctx error",
+  "arguments": [
+    "$CLAUDE",
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--json-schema",
+    "$SCHEMA",
+    "--permission-mode",
+    "plan",
+    "--permission-prompts",
+    "none",
+    "--model",
+    "claude-haiku-4-5-20251001",
+    "--session-id",
+    "ceca1e1e-4c5e-4713-a9de-a77857b57573",
+    "--add-dir",
+    "$WORKSPACE"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CLAUDE_CONFIG_DIR",
+    "HOME",
+    "PATH"
+  ],
+  "permission_mode": "plan",
+  "exit_code": 143,
+  "outcome": "canceled",
+  "error": "run $CLAUDE: context deadline exceeded",
+  "session_id": "$SESSION",
+  "session_id_consistent": true,
+  "event_types": [
+    "system",
+    "rate_limit_event"
+  ],
+  "system_subtypes": [
+    "init",
+    "thinking_tokens"
+  ],
+  "result_event_present": false,
+  "structured_output_present": false,
+  "permission_denials": 0,
+  "stdout_bytes": 2963,
+  "stderr_bytes": 0,
+  "largest_jsonl_event_bytes": 2066,
+  "final_output_present": false,
+  "final_output_bytes": 0
+}

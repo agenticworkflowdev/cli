@@ -1,0 +1,43 @@
+{
+  "name": "schema-rejected",
+  "expectation": "CLI rejects the malformed --json-schema up front: exit 1, stderr error, empty stdout, no API call",
+  "arguments": [
+    "$CLAUDE",
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--json-schema",
+    "$SCHEMA",
+    "--permission-mode",
+    "plan",
+    "--permission-prompts",
+    "none",
+    "--model",
+    "claude-haiku-4-5-20251001",
+    "--session-id",
+    "86ae6a24-4163-4efb-a835-81e404fd34b6",
+    "--add-dir",
+    "$WORKSPACE"
+  ],
+  "working_directory": "$WORKSPACE",
+  "environment_keys": [
+    "AWDEV_WORKER",
+    "CLAUDE_CONFIG_DIR",
+    "HOME",
+    "PATH"
+  ],
+  "permission_mode": "plan",
+  "exit_code": 1,
+  "outcome": "failed",
+  "error": "$CLAUDE exited with code 1",
+  "event_types": null,
+  "result_event_present": false,
+  "structured_output_present": false,
+  "permission_denials": 0,
+  "stdout_bytes": 0,
+  "stderr_bytes": 97,
+  "largest_jsonl_event_bytes": 0,
+  "final_output_present": false,
+  "final_output_bytes": 0
+}

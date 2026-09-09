@@ -22,7 +22,7 @@ Use the recovery boundary for the recorded phase:
   rerun `awdev run github N`. AWDev adopts only an exact validated bootstrap
   worktree; it never repairs a conflicting path or branch destructively.
 - For `spec/failed`, preserve the generated worktree and error log. Correct an
-  external Codex, timeout, schema, or filesystem problem, then inspect the
+  external agent-CLI, timeout, schema, or filesystem problem, then inspect the
   partial spec if one exists. There is no automated retry for this phase.
 - For `implementation/failed`, inspect `last_error` and the private log for
   agent and check results. Fix the environment rather than bypassing a check.

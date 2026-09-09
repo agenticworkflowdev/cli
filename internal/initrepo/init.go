@@ -50,10 +50,13 @@ const (
 	FileRetained FileStatus = "retained"
 )
 
-// SkillResult contains the outcomes for the optional repository Codex skill.
+// SkillResult contains the outcomes for the optional repository agent skill.
 type SkillResult struct {
 	Instructions FileStatus
 	Metadata     FileStatus
+	// MetadataPath is the repository-relative path of the installed provider
+	// skill metadata file (its basename varies per agent provider).
+	MetadataPath string
 }
 
 // GitignoreStatus describes how initialization handled .gitignore.
@@ -75,8 +78,12 @@ type Result struct {
 // Initialize installs missing defaults beneath controllerRoot without replacing
 // or rewriting any existing repository-owned asset.
 func Initialize(controllerRoot string, provider agent.Provider, options Options) (Result, error) {
-	if provider != agent.ProviderCodex {
+	if provider != agent.ProviderCodex && provider != agent.ProviderClaudeCode {
 		return Result{}, fmt.Errorf("unsupported agent %q", provider)
+	}
+	defaultConfig, err := assets.DefaultConfig(provider)
+	if err != nil {
+		return Result{}, err
 	}
 	var result Result
 	for _, relative := range managedDirectories {
@@ -89,11 +96,18 @@ func Initialize(controllerRoot string, provider agent.Provider, options Options)
 		}
 	}
 
-	err := fs.WalkDir(assets.Defaults(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+	if _, err := createFileIfMissing(filepath.Join(controllerRoot, ".awdev", "config.json"), defaultConfig); err != nil {
+		return Result{}, fmt.Errorf("install .awdev/config.json: %w", err)
+	}
+
+	err = fs.WalkDir(assets.Defaults(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		if isConfigTemplate(path) {
 			return nil
 		}
 		contents, err := fs.ReadFile(assets.Defaults(), path)
@@ -111,7 +125,7 @@ func Initialize(controllerRoot string, provider agent.Provider, options Options)
 		return Result{}, err
 	}
 	if options.WithSkill {
-		skill, err := installSkill(controllerRoot)
+		skill, err := installSkill(controllerRoot, provider)
 		if err != nil {
 			return Result{}, err
 		}
@@ -126,7 +140,12 @@ func Initialize(controllerRoot string, provider agent.Provider, options Options)
 	return result, nil
 }
 
-func installSkill(controllerRoot string) (SkillResult, error) {
+func isConfigTemplate(path string) bool {
+	base := filepath.Base(filepath.ToSlash(path))
+	return strings.HasPrefix(base, "config") && strings.HasSuffix(base, ".json")
+}
+
+func installSkill(controllerRoot string, provider agent.Provider) (SkillResult, error) {
 	for _, relative := range skillDirectories {
 		if _, err := ensureDirectory(filepath.Join(controllerRoot, filepath.FromSlash(relative))); err != nil {
 			return SkillResult{}, fmt.Errorf("prepare %s: %w", relative, err)
@@ -152,11 +171,16 @@ func installSkill(controllerRoot string) (SkillResult, error) {
 	if err != nil {
 		return SkillResult{}, fmt.Errorf("install .agents/skills/awdev/SKILL.md: %w", err)
 	}
-	metadata, err := install("agents/openai.yaml", ".agents/skills/awdev/agents/openai.yaml")
-	if err != nil {
-		return SkillResult{}, fmt.Errorf("install .agents/skills/awdev/agents/openai.yaml: %w", err)
+	metadataFile, ok := assets.SkillMetadataFiles[provider]
+	if !ok {
+		return SkillResult{}, fmt.Errorf("no repository skill metadata for agent provider %q", provider)
 	}
-	return SkillResult{Instructions: instructions, Metadata: metadata}, nil
+	metadataRelative := ".agents/skills/awdev/agents/" + metadataFile
+	metadata, err := install("agents/"+metadataFile, metadataRelative)
+	if err != nil {
+		return SkillResult{}, fmt.Errorf("install %s: %w", metadataRelative, err)
+	}
+	return SkillResult{Instructions: instructions, Metadata: metadata, MetadataPath: metadataRelative}, nil
 }
 
 func ensureDirectory(path string) (bool, error) {

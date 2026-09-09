@@ -1,0 +1,5 @@
+{
+  "status": "completed",
+  "summary": "Attempted to run `printf overwrite > read-only-marker.txt` but the file write operation was blocked by permission restrictions. The working directory is in a read-only state where file writes require explicit approval, which is not available in this session context.",
+  "question": ""
+}

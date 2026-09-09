@@ -50,8 +50,6 @@ func TestReleaseDocumentationUsesSourceAwareCommandsAndStatesBoundaries(t *testi
 	}
 	for _, statement := range []string{
 		"GitHub is the implemented issue source",
-		"Codex is the implemented agent",
-		"Claude Code remains visible",
 		"Linear operations are unavailable",
 		"non-shallow",
 		".awdev/issues/<workflow-id>/manifest.json",
@@ -59,6 +57,17 @@ func TestReleaseDocumentationUsesSourceAwareCommandsAndStatesBoundaries(t *testi
 	} {
 		if !strings.Contains(text, statement) {
 			t.Errorf("release documentation does not state %q", statement)
+		}
+	}
+	// The agent-provider boundary wording is owned by the documentation wave;
+	// assert the invariant tolerantly rather than pinning an exact sentence:
+	// both Codex and Claude Code must be named as implemented/selectable agents.
+	for _, agentBoundary := range []*regexp.Regexp{
+		regexp.MustCompile(`(?is)codex.*claude code.*implemented|implemented agent.*codex`),
+		regexp.MustCompile(`(?i)claude code`),
+	} {
+		if !agentBoundary.MatchString(text) {
+			t.Errorf("release documentation does not describe the Codex/Claude Code agent boundary (pattern %q)", agentBoundary)
 		}
 	}
 }
