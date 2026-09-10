@@ -6,6 +6,7 @@ import (
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/initrepo"
+	"github.com/agenticworkflowdev/cli/internal/version"
 	"github.com/agenticworkflowdev/cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -70,6 +71,7 @@ func NewRootCommand(services Services) *cobra.Command {
 	command := &cobra.Command{
 		Use:           "awdev",
 		Short:         "Agentic Workflow Development CLI",
+		Version:       version.String(),
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

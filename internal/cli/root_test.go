@@ -40,6 +40,24 @@ func TestRootCommandShowsHelpWithoutSelectingAnAgent(t *testing.T) {
 	}
 }
 
+func TestRootCommandPrintsVersionWithLongAndShortFlags(t *testing.T) {
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			var output bytes.Buffer
+			command := cli.NewRootCommand(cli.Services{})
+			command.SetOut(&output)
+			command.SetArgs([]string{flag})
+
+			if err := command.Execute(); err != nil {
+				t.Fatalf("execute %s: %v", flag, err)
+			}
+			if got, want := output.String(), "awdev version dev\n"; got != want {
+				t.Fatalf("version output = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 
