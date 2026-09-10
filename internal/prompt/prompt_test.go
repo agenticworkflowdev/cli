@@ -78,6 +78,38 @@ func TestRendererTreatsIssueFieldsAsLiteralData(t *testing.T) {
 	}
 }
 
+func TestRendererInjectsSkippedSpecificationRequirementsIntoExistingTemplates(t *testing.T) {
+	renderer, err := prompt.NewRenderer("legacy-implement", []byte("Implement the supplied specification.\nRead it from {{.SpecificationPath}}.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := prompt.PromptData{
+		SkipSpecification: true,
+		Issue: prompt.IssueData{
+			Number: 17,
+			URL:    "https://github.com/owner/repository/issues/17",
+			Title:  "Literal {{.WorkflowID}}",
+			Body:   "line one\nline two",
+		},
+	}
+
+	got, err := renderer.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Implement the supplied specification.",
+		"This workflow was started with --skip-spec. No specification file exists.",
+		`Issue title: "Literal {{.WorkflowID}}"`,
+		`Issue body: "line one\nline two"`,
+		"that instruction is superseded for this workflow",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered prompt does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRendererRejectsMissingPromptKeysAtRenderTime(t *testing.T) {
 	renderer, err := prompt.NewRenderer("spec", []byte("{{.Missing}}"))
 	if err != nil {

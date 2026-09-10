@@ -207,7 +207,7 @@ func runCodex(root string, args []string, input []byte) toolResult {
 		}
 	case strings.HasPrefix(prompt, "Continue the recorded workflow phase"):
 		writeSpec(prompt)
-	case strings.HasPrefix(prompt, "Implement the supplied specification"):
+	case strings.HasPrefix(prompt, "Implement the supplied specification"), strings.HasPrefix(prompt, "Implement the persisted issue description directly"):
 		writeFile("implementation.txt", "implemented\n")
 		if settings.Mode == scenarioCheckFix || settings.Mode == scenarioCheckExhaust {
 			writeFile("needs-check-fix", "repair me\n")
@@ -315,7 +315,7 @@ func runClaude(root string, args []string, input []byte) toolResult {
 		}
 	case strings.HasPrefix(prompt, "Continue the recorded workflow phase"):
 		writeSpec(prompt)
-	case strings.HasPrefix(prompt, "Implement the supplied specification"):
+	case strings.HasPrefix(prompt, "Implement the supplied specification"), strings.HasPrefix(prompt, "Implement the persisted issue description directly"):
 		writeFile("implementation.txt", "implemented\n")
 		if settings.Mode == scenarioCheckFix || settings.Mode == scenarioCheckExhaust {
 			writeFile("needs-check-fix", "repair me\n")

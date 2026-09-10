@@ -38,6 +38,21 @@ func TestPublicationFinalizesApprovedReviewInDurableOrder(t *testing.T) {
 	}
 }
 
+func TestPublicationFinalizesWithoutSpecificationWhenItWasSkipped(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	fixture.manifest.SkipSpecification = true
+	fixture.manifest.SpecificationPath = ""
+	fixture.github.created = githubapi.PullRequest{Number: 23, URL: "https://github.com/owner/repository/pull/23", Head: fixture.manifest.Branch, HeadOwner: "owner", Base: "main", State: "OPEN"}
+
+	result, err := fixture.service().Finalize(context.Background(), fixture.root, fixture.manifest.WorkflowID, gitrepo.WorktreeBaseline{})
+	if err != nil {
+		t.Fatalf("finalize skipped specification: %v", err)
+	}
+	if result.Manifest.Phase != state.PhaseDone || !result.Manifest.SkipSpecification || result.Manifest.SpecificationPath != "" {
+		t.Fatalf("result manifest = %#v", result.Manifest)
+	}
+}
+
 func TestPublicationReusesOneClosedPullRequestAndRejectsAmbiguity(t *testing.T) {
 	t.Run("reuse", func(t *testing.T) {
 		fixture := newPublicationFixture(t)

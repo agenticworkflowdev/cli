@@ -18,6 +18,7 @@ type PublicationRequest struct {
 	Worktree          string
 	Branch            string
 	BaseSHA           string
+	SkipSpecification bool
 	SpecificationPath string
 	CommitMessage     string
 	ExpectedTreeSHA   string
@@ -92,10 +93,8 @@ func (manager *PublicationManager) Stage(ctx context.Context, request Publicatio
 	} else if !changed {
 		return "", errors.New("publication requires at least one change from the pinned base")
 	}
-	if changed, err := manager.diffChanged(ctx, request.Worktree, "--cached", request.BaseSHA, "--", request.SpecificationPath); err != nil {
-		return "", fmt.Errorf("verify staged specification: %w", err)
-	} else if !changed {
-		return "", errors.New("publication diff must include the generated specification")
+	if err := manager.verifyStagedSpecification(ctx, request); err != nil {
+		return "", err
 	}
 	treeSHA, err := manager.git.output(ctx, request.Worktree, "write-tree")
 	if err != nil {
@@ -156,10 +155,8 @@ func (manager *PublicationManager) Commit(ctx context.Context, request Publicati
 		} else if !changed {
 			return "", errors.New("publication requires at least one change from the pinned base")
 		}
-		if changed, err := manager.diffChanged(ctx, request.Worktree, "--cached", request.BaseSHA, "--", request.SpecificationPath); err != nil {
-			return "", fmt.Errorf("verify staged specification: %w", err)
-		} else if !changed {
-			return "", errors.New("publication diff must include the generated specification")
+		if err := manager.verifyStagedSpecification(ctx, request); err != nil {
+			return "", err
 		}
 		if err := manager.git.command(ctx, request.Worktree, "commit", "--no-gpg-sign", "--no-verify", "-m", request.CommitMessage); err != nil {
 			return "", fmt.Errorf("create controller-owned commit: %w", err)
@@ -243,6 +240,20 @@ func (manager *PublicationManager) diffChanged(ctx context.Context, worktree str
 	return false, commandError(result, err)
 }
 
+func (manager *PublicationManager) verifyStagedSpecification(ctx context.Context, request PublicationRequest) error {
+	if request.SkipSpecification {
+		return nil
+	}
+	changed, err := manager.diffChanged(ctx, request.Worktree, "--cached", request.BaseSHA, "--", request.SpecificationPath)
+	if err != nil {
+		return fmt.Errorf("verify staged specification: %w", err)
+	}
+	if !changed {
+		return errors.New("publication diff must include the generated specification")
+	}
+	return nil
+}
+
 func validatePublicationRequest(request PublicationRequest) error {
 	if !filepath.IsAbs(request.Worktree) || filepath.Clean(request.Worktree) != request.Worktree {
 		return errors.New("publication worktree must be an absolute clean path")
@@ -256,7 +267,10 @@ func validatePublicationRequest(request PublicationRequest) error {
 	if request.ExpectedTreeSHA != "" && !isFullObjectID(request.ExpectedTreeSHA) {
 		return errors.New("expected publication tree SHA is malformed")
 	}
-	if request.SpecificationPath == "" || path.Clean(request.SpecificationPath) != request.SpecificationPath || path.IsAbs(request.SpecificationPath) || request.SpecificationPath == ".." || strings.HasPrefix(request.SpecificationPath, "../") || strings.ContainsAny(request.SpecificationPath, "\\\x00") {
+	if request.SkipSpecification && request.SpecificationPath != "" {
+		return errors.New("a skipped publication specification cannot have a path")
+	}
+	if !request.SkipSpecification && (request.SpecificationPath == "" || path.Clean(request.SpecificationPath) != request.SpecificationPath || path.IsAbs(request.SpecificationPath) || request.SpecificationPath == ".." || strings.HasPrefix(request.SpecificationPath, "../") || strings.ContainsAny(request.SpecificationPath, "\\\x00")) {
 		return errors.New("publication specification path is malformed")
 	}
 	if strings.TrimSpace(request.CommitMessage) == "" || strings.ContainsAny(request.CommitMessage, "\r\n\x00") {

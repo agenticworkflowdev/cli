@@ -48,6 +48,9 @@ func TestReleaseDocumentationUsesSourceAwareCommandsAndStatesBoundaries(t *testi
 			t.Errorf("release documentation does not contain %q", command)
 		}
 	}
+	if !strings.Contains(text, "awdev run github 123 --skip-spec") {
+		t.Error("release documentation does not document the --skip-spec run option")
+	}
 	for _, statement := range []string{
 		"GitHub is the implemented issue source",
 		"Linear operations are unavailable",
@@ -81,6 +84,9 @@ func TestBuiltHelpUsesSourceAwareGrammar(t *testing.T) {
 		}
 		if !strings.Contains(string(output), "awdev "+operation+" github NUMBER") {
 			t.Errorf("%s help lacks source-aware example:\n%s", operation, output)
+		}
+		if operation == "run" && !strings.Contains(string(output), "--skip-spec") {
+			t.Errorf("run help lacks --skip-spec option:\n%s", output)
 		}
 	}
 }

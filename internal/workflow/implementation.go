@@ -71,7 +71,7 @@ func (failure *ImplementationFailure) DiagnosticDetails() string {
 	return strings.TrimSpace(details.String())
 }
 
-// ImplementationRunner is the workflow boundary used after specification.
+// ImplementationRunner is the workflow boundary used after requirements are ready.
 type ImplementationRunner interface {
 	Implement(context.Context, string, string) (ImplementationResult, error)
 }
@@ -135,8 +135,10 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 	if err != nil {
 		return ImplementationResult{}, fmt.Errorf("read persisted workflow for implementation: %w", err)
 	}
-	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.SpecificationPath == "" {
-		return ImplementationResult{}, fmt.Errorf("implementation requires completed spec/running state, got %s/%s", current.Phase, current.Status)
+	readyWithSpecification := !current.SkipSpecification && current.Phase == state.PhaseSpec && current.SpecificationPath != ""
+	readyWithoutSpecification := current.SkipSpecification && current.Phase == state.PhaseInit && current.SpecificationPath == ""
+	if current.Status != state.StatusRunning || (!readyWithSpecification && !readyWithoutSpecification) {
+		return ImplementationResult{}, fmt.Errorf("implementation requires completed spec/running state or init/running with specification skipped, got %s/%s", current.Phase, current.Status)
 	}
 	running := current
 	running.Phase = state.PhaseImplementation
@@ -162,7 +164,7 @@ func (service *ImplementationService) Resume(ctx context.Context, controllerRoot
 	if err != nil {
 		return ImplementationResult{}, fmt.Errorf("read persisted workflow for implementation resume: %w", err)
 	}
-	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || current.SpecificationPath == "" || current.Blocker == nil || current.Blocker.Answer == nil {
+	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || !hasRequirements(current) || current.Blocker == nil || current.Blocker.Answer == nil {
 		return ImplementationResult{}, fmt.Errorf("implementation resume requires answered implementation/running state, got %s/%s", current.Phase, current.Status)
 	}
 	return service.run(ctx, controllerRoot, current, service.resumePrompt)

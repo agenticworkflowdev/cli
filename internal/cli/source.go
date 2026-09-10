@@ -21,12 +21,13 @@ import (
 func newSourceCommand(operation Operation, services Services) *cobra.Command {
 	var jsonOutput bool
 	var checkIssue bool
+	var runOptions workflow.RunOptions
 	command := &cobra.Command{
 		Use:     string(operation) + " SOURCE NUMBER",
 		Short:   sourceCommandDescription(operation),
 		Example: "  awdev " + string(operation) + " github NUMBER",
 		Args: func(_ *cobra.Command, args []string) error {
-			_, err := parseSourceItem(operation, args)
+			_, err := parseSourceItemWithRunOptions(operation, args, &runOptions)
 			return err
 		},
 		RunE: func(command *cobra.Command, args []string) error {
@@ -44,13 +45,13 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			if err := services.ValidateConfig(root); err != nil {
 				return fmt.Errorf("validate configuration: %w", err)
 			}
-			item, err := parseSourceItem(operation, args)
+			item, err := parseSourceItemWithRunOptions(operation, args, &runOptions)
 			if err != nil {
 				return err
 			}
 			if operation == OperationRun && item.Source == SourceGitHub && services.RunGitHub != nil {
 				progress := newProgressReporter(command.ErrOrStderr())
-				result, err := services.RunGitHub(command.Context(), root, item.Number, progress)
+				result, err := services.RunGitHub(command.Context(), root, item.Number, runOptions, progress)
 				if err != nil {
 					return err
 				}
@@ -85,7 +86,10 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			return services.Execute(command.Context(), operation, item, root)
 		},
 	}
-	if operation == OperationStatus {
+	if operation == OperationRun {
+		command.Flags().BoolVar(&runOptions.SkipSpecification, "skip-spec", false, "implement directly from the source description without creating a specification")
+		command.Flags().SetInterspersed(false)
+	} else if operation == OperationStatus {
 		command.Flags().BoolVar(&jsonOutput, "json", false, "emit stable machine-readable JSON")
 		command.Flags().BoolVar(&checkIssue, "check-issue", false, "warn if the live issue changed")
 		command.Flags().SetInterspersed(true)
@@ -93,6 +97,14 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 		command.Flags().SetInterspersed(false)
 	}
 	return command
+}
+
+func parseSourceItemWithRunOptions(operation Operation, args []string, options *workflow.RunOptions) (SourceItem, error) {
+	if operation == OperationRun && len(args) == 3 && args[2] == "--skip-spec" {
+		options.SkipSpecification = true
+		args = args[:2]
+	}
+	return parseSourceItem(operation, args)
 }
 
 func renderGitHubResume(command *cobra.Command, result workflow.ResumeResult) error {

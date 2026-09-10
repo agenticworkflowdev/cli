@@ -203,6 +203,56 @@ func TestHappyAndCorrectionJourneysAsBuilt(t *testing.T) {
 	}
 }
 
+func TestSkipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T) {
+	for _, provider := range allProviders {
+		t.Run(provider.config, func(t *testing.T) {
+			skipSpecificationJourneyUsesIssueDescriptionDirectly(t, provider)
+		})
+	}
+}
+
+func skipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T, provider agentProvider) {
+	fixture := newFixtureForProvider(t, scenarioHappy, provider)
+	fixture.initialize(t)
+
+	output := fixture.run(t, "run", "github", "123", "--skip-spec")
+	if !strings.Contains(output, "Pull request created: https://github.com/owner/repo/pull/77") {
+		t.Fatalf("run output = %q", output)
+	}
+	if strings.Contains(output, "Specification agent") || strings.Contains(output, "Specification complete") {
+		t.Fatalf("skip-spec run reported specification progress: %q", output)
+	}
+
+	events := fixture.trace(t)
+	wantTrace := []string{
+		"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate",
+		"codex:implementation", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create",
+	}
+	wantTrace = retargetTrace(wantTrace, provider.tool)
+	if got := journeyTrace(events); !equalTrace(got, wantTrace) {
+		t.Fatalf("journey trace =\n%q\nwant\n%q", got, wantTrace)
+	}
+	implementationPromptFound := false
+	reviewPromptFound := false
+	for _, event := range events {
+		if event.Phase != "start" || event.Tool != provider.tool {
+			continue
+		}
+		if strings.HasPrefix(event.Stdin, "Implement the persisted issue description directly") {
+			implementationPromptFound = true
+		}
+		if strings.HasPrefix(event.Stdin, "Review the current worktree against the persisted issue description") {
+			reviewPromptFound = true
+		}
+		if (implementationPromptFound || reviewPromptFound) && !strings.Contains(event.Stdin, `Issue body: "Implement safely; literal {{.WorkflowID}} and --danger remain data."`) {
+			t.Fatalf("skip-spec prompt does not contain the persisted issue description: %q", event.Stdin)
+		}
+	}
+	if !implementationPromptFound || !reviewPromptFound {
+		t.Fatalf("skip-spec prompts found: implementation=%t review=%t", implementationPromptFound, reviewPromptFound)
+	}
+}
+
 func TestHumanBlockerResumesThroughOneMarkedComment(t *testing.T) {
 	for _, provider := range allProviders {
 		t.Run(provider.config, func(t *testing.T) {
@@ -633,7 +683,7 @@ func agentTraceLabel(tool, prompt string) string {
 	switch {
 	case strings.HasPrefix(prompt, "Create an implementation specification"):
 		return tool + ":spec"
-	case strings.HasPrefix(prompt, "Implement the supplied specification"):
+	case strings.HasPrefix(prompt, "Implement the supplied specification"), strings.HasPrefix(prompt, "Implement the persisted issue description directly"):
 		return tool + ":implementation"
 	case strings.HasPrefix(prompt, "Repair the implementation"):
 		return tool + ":check-repair"

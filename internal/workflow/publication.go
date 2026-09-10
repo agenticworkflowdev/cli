@@ -116,7 +116,7 @@ func (service *PublicationService) Finalize(ctx context.Context, controllerRoot,
 	if err != nil {
 		return PublicationResult{}, fmt.Errorf("read persisted workflow for publication: %w", err)
 	}
-	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || current.Review == nil || current.SpecificationPath == "" {
+	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || current.Review == nil || !hasRequirements(current) {
 		return PublicationResult{}, fmt.Errorf("publication requires review/running state, got %s/%s", current.Phase, current.Status)
 	}
 	evidence, err := service.reviews.ReadReview(controllerRoot, workflowID)
@@ -204,12 +204,14 @@ func (service *PublicationService) publish(ctx context.Context, controllerRoot s
 	if failed := failedCheckResults(checkResults); len(failed) > 0 {
 		return service.fail(controllerRoot, running, result, errors.New("final deterministic checks failed"))
 	}
-	if err := state.VerifySpecificationFile(absoluteWorktree, running.SpecificationPath); err != nil {
-		return service.fail(controllerRoot, running, result, fmt.Errorf("verify generated specification before publication: %w", err))
+	if !running.SkipSpecification {
+		if err := state.VerifySpecificationFile(absoluteWorktree, running.SpecificationPath); err != nil {
+			return service.fail(controllerRoot, running, result, fmt.Errorf("verify generated specification before publication: %w", err))
+		}
 	}
 	request := gitrepo.PublicationRequest{
 		Worktree: absoluteWorktree, Branch: running.Branch, BaseSHA: running.BaseSHA,
-		SpecificationPath: running.SpecificationPath, CommitMessage: fmt.Sprintf("awdev: implement issue #%d", running.Issue.Number),
+		SkipSpecification: running.SkipSpecification, SpecificationPath: running.SpecificationPath, CommitMessage: fmt.Sprintf("awdev: implement issue #%d", running.Issue.Number),
 		ExpectedTreeSHA: running.CommitTreeSHA, ExpectedCommitSHA: running.CommitSHA,
 	}
 	if running.CommitTreeSHA == "" {

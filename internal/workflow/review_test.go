@@ -49,6 +49,25 @@ func TestReviewImmediatelyApprovesTheCheckedDiff(t *testing.T) {
 	}
 }
 
+func TestReviewUsesIssueRequirementsWhenSpecificationWasSkipped(t *testing.T) {
+	fixture := newReviewFixture(t, 3)
+	fixture.state.manifest.SkipSpecification = true
+	fixture.state.manifest.SpecificationPath = ""
+	fixture.reviewDecoder.results = []review.Result{{Approved: true, Findings: []review.Finding{}}}
+
+	result, err := fixture.service.Review(context.Background(), fixture.root, fixture.state.manifest.WorkflowID, fixture.passing, gitrepo.WorktreeBaseline{})
+	if err != nil {
+		t.Fatalf("review skipped specification: %v", err)
+	}
+	data := fixture.reviewPrompt.datas[0]
+	if !result.Manifest.SkipSpecification || result.Manifest.SpecificationPath != "" || !data.SkipSpecification {
+		t.Fatalf("result = %#v, prompt data = %#v", result.Manifest, data)
+	}
+	if data.Issue.Body != fixture.state.manifest.Issue.Body {
+		t.Fatalf("prompt issue body = %q, want %q", data.Issue.Body, fixture.state.manifest.Issue.Body)
+	}
+}
+
 func TestReviewRetryAfterResumedCorrectionPreservesAttemptCounter(t *testing.T) {
 	fixture := newReviewFixture(t, 3)
 	fixture.state.manifest.Review = &state.ReviewCounters{Attempt: 2, MaxAttempts: 3}

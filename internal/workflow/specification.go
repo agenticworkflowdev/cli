@@ -202,7 +202,7 @@ func (service *SpecificationService) fail(controllerRoot string, running state.M
 func promptData(manifest state.Manifest, specificationPath string) prompt.PromptData {
 	data := prompt.PromptData{
 		WorkflowID: manifest.WorkflowID, Repository: manifest.Repository, Branch: manifest.Branch,
-		BaseSHA: manifest.BaseSHA, SpecificationPath: specificationPath,
+		BaseSHA: manifest.BaseSHA, SkipSpecification: manifest.SkipSpecification, SpecificationPath: specificationPath,
 		Issue: prompt.IssueData{Number: manifest.Issue.Number, Title: manifest.Issue.Title, Body: manifest.Issue.Body, URL: manifest.Issue.URL},
 	}
 	if manifest.Blocker != nil && manifest.Blocker.Comment != nil && manifest.Blocker.Answer != nil {
@@ -212,6 +212,10 @@ func promptData(manifest state.Manifest, specificationPath string) prompt.Prompt
 		}
 	}
 	return data
+}
+
+func hasRequirements(manifest state.Manifest) bool {
+	return manifest.SkipSpecification || manifest.SpecificationPath != ""
 }
 
 func sanitizeTechnicalError(err error, controllerRoot string) string {

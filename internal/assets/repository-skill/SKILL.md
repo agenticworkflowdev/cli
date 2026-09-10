@@ -11,6 +11,7 @@ Use this skill only when the user explicitly invokes `$awdev`.
 Dispatch exactly one of these source-aware CLI commands from the repository:
 
 - Start an issue workflow: `awdev run github NUMBER`
+- Start directly from the issue description without creating a specification: `awdev run github NUMBER --skip-spec`
 - Inspect an issue workflow: `awdev status github NUMBER`
 - Continue a blocked issue workflow: `awdev resume github NUMBER`
 

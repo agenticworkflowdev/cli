@@ -158,7 +158,7 @@ func (service *ReviewService) Review(ctx context.Context, controllerRoot, workfl
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("read persisted workflow for review: %w", err)
 	}
-	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || current.SpecificationPath == "" {
+	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || !hasRequirements(current) {
 		return ReviewResult{}, fmt.Errorf("review requires checked implementation/running state, got %s/%s", current.Phase, current.Status)
 	}
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, current.Worktree)
@@ -292,7 +292,7 @@ func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workfl
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("read persisted workflow for review resume: %w", err)
 	}
-	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || current.SpecificationPath == "" || current.Review == nil || current.Blocker == nil || current.Blocker.Answer == nil {
+	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || !hasRequirements(current) || current.Review == nil || current.Blocker == nil || current.Blocker.Answer == nil {
 		return ReviewResult{}, fmt.Errorf("review resume requires answered review/running state, got %s/%s", current.Phase, current.Status)
 	}
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, current.Worktree)

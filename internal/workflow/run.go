@@ -21,6 +21,11 @@ const (
 	RunExisting RunOutcome = "existing"
 )
 
+// RunOptions controls optional behavior for a newly created workflow.
+type RunOptions struct {
+	SkipSpecification bool
+}
+
 // RunResult is rendered by the CLI and carries typed bootstrap data forward.
 type RunResult struct {
 	WorkflowID     string
@@ -82,11 +87,11 @@ func NewRunService(locker state.Locker, existing state.ExistingReader, github gi
 
 // RunGitHub validates one issue and holds the workflow lock through any
 // installed next bootstrap step.
-func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string, issueNumber int) (result RunResult, err error) {
+func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string, issueNumber int, options RunOptions) (result RunResult, err error) {
 	if issueNumber <= 0 {
 		return RunResult{}, errors.New("issue number must be positive")
 	}
-	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || service.specification == nil || service.implementation == nil || service.reviewer == nil {
+	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || (!options.SkipSpecification && service.specification == nil) || service.implementation == nil || service.reviewer == nil {
 		return RunResult{}, errors.New("GitHub run service is not fully configured")
 	}
 	issueKey, err := state.GitHubIssueKey(issueNumber)
@@ -171,30 +176,36 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 			State:     snapshot.Issue.State,
 			UpdatedAt: snapshot.Issue.UpdatedAt,
 		},
-		Actor:    snapshot.Actor.Login,
-		Phase:    state.PhaseInit,
-		Status:   state.StatusRunning,
-		Branch:   worktree.Branch,
-		BaseSHA:  worktree.BaseSHA,
-		Worktree: relativeWorktree,
+		Actor:             snapshot.Actor.Login,
+		Phase:             state.PhaseInit,
+		Status:            state.StatusRunning,
+		Branch:            worktree.Branch,
+		BaseSHA:           worktree.BaseSHA,
+		Worktree:          relativeWorktree,
+		SkipSpecification: options.SkipSpecification,
 	}
 	if err := service.manifestWriter.Save(controllerRoot, manifest); err != nil {
 		return RunResult{}, fmt.Errorf("persist initial workflow manifest: %w", err)
 	}
-	specification, err := service.specification.Create(ctx, controllerRoot, workflowID)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if specification.Blocker != nil {
-		published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, specification.Blocker)
-		specification.Manifest = published
-		return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &specification.Manifest, Specification: &specification}, publishErr
+	var specification *SpecificationResult
+	if !options.SkipSpecification {
+		created, createErr := service.specification.Create(ctx, controllerRoot, workflowID)
+		if createErr != nil {
+			return RunResult{}, createErr
+		}
+		specification = &created
+		if created.Blocker != nil {
+			published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, created.Blocker)
+			created.Manifest = published
+			specification = &created
+			return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &created.Manifest, Specification: specification}, publishErr
+		}
 	}
 	implementation, err := service.implementation.Implement(ctx, controllerRoot, workflowID)
 	if err != nil {
 		return RunResult{
 			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-			Manifest: &implementation.Manifest, Specification: &specification, Implementation: &implementation,
+			Manifest: &implementation.Manifest, Specification: specification, Implementation: &implementation,
 		}, err
 	}
 	if implementation.Blocker != nil {
@@ -202,7 +213,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		implementation.Manifest = published
 		return RunResult{
 			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-			Manifest: &implementation.Manifest, Specification: &specification, Implementation: &implementation,
+			Manifest: &implementation.Manifest, Specification: specification, Implementation: &implementation,
 		}, publishErr
 	}
 	reviewResult, err := service.reviewer.Review(ctx, controllerRoot, workflowID, implementation.CheckResults, implementation.CheckedState)
@@ -213,7 +224,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	}
 	result = RunResult{
 		WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-		Manifest: &reviewResult.Manifest, Specification: &specification, Implementation: &implementation, Review: &reviewResult,
+		Manifest: &reviewResult.Manifest, Specification: specification, Implementation: &implementation, Review: &reviewResult,
 	}
 	if err != nil || reviewResult.Blocker != nil || service.finalizer == nil {
 		return result, err

@@ -52,6 +52,19 @@ awdev status github 123
 awdev status github 123 --json
 ```
 
+To implement directly from the source item's saved description without running
+the specification agent or creating a specification file, add `--skip-spec`:
+
+```sh
+awdev run github 123 --skip-spec
+```
+
+The option applies when a new workflow is created. The description is persisted
+in the workflow manifest and remains the requirements input for implementation,
+repairs, review, and blocked-workflow recovery. AWDev injects that input at the
+controller boundary, so repositories initialized with earlier customized prompt
+templates can use the option without replacing those templates.
+
 If an agent needs a decision, AWDev posts one marked issue comment and stops in
 `blocked` state. Reply to that comment with a GitHub user account, then run:
 

@@ -64,6 +64,35 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	}
 }
 
+func TestImplementationStartsFromIssueRequirementsWhenSpecificationWasSkipped(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := implementationManifest(t)
+	manifest.Phase = state.PhaseInit
+	manifest.SkipSpecification = true
+	manifest.SpecificationPath = ""
+	stateStore := &implementationState{manifest: manifest, events: &events}
+	implementPrompt := &implementationPrompt{label: "implement", rendered: "implementation prompt", events: &events}
+	service := workflow.NewImplementationService(
+		stateStore, stateStore, implementPrompt, &implementationPrompt{label: "repair", events: &events},
+		&implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`)}}}},
+		&implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "done"}}},
+		&implementationChecks{events: &events, results: [][]checks.Result{{{Name: "tests", ExitCode: 0}}}},
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+		[]checks.Definition{{Name: "tests", Command: []string{"go", "test"}, Timeout: time.Minute}}, nil,
+	)
+
+	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("implement skipped specification: %v", err)
+	}
+	if !result.Manifest.SkipSpecification || result.Manifest.SpecificationPath != "" || !implementPrompt.data.SkipSpecification {
+		t.Fatalf("result = %#v, prompt data = %#v", result.Manifest, implementPrompt.data)
+	}
+	if implementPrompt.data.Issue.Body != manifest.Issue.Body {
+		t.Fatalf("prompt issue body = %q, want %q", implementPrompt.data.Issue.Body, manifest.Issue.Body)
+	}
+}
+
 func TestImplementationResumeUsesFreshTypedPromptBeforeRunningAllChecks(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)

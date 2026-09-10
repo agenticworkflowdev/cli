@@ -55,12 +55,12 @@ func NewCommand() *cobra.Command {
 			_, err = config.Parse(installed.Config.Contents)
 			return err
 		},
-		RunGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, progress cli.ProgressReporter) (workflow.RunResult, error) {
+		RunGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, options workflow.RunOptions, progress cli.ProgressReporter) (workflow.RunResult, error) {
 			runtime, err := buildRuntime(controllerRoot, progress)
 			if err != nil {
 				return workflow.RunResult{}, err
 			}
-			return runtime.run.RunGitHub(ctx, controllerRoot, issueNumber)
+			return runtime.run.RunGitHub(ctx, controllerRoot, issueNumber, options)
 		},
 		ResumeGitHub: func(ctx context.Context, controllerRoot string, issueNumber int, progress cli.ProgressReporter) (workflow.ResumeResult, error) {
 			runtime, err := buildRuntime(controllerRoot, progress)

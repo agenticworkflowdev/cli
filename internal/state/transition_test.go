@@ -90,6 +90,21 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 	}
 }
 
+func TestTransitionAllowsInitToImplementationOnlyWhenSpecificationWasSkipped(t *testing.T) {
+	root := t.TempDir()
+	current := manifestAt(root, state.PhaseInit, state.StatusRunning)
+	current.SkipSpecification = true
+	next := current
+	next.Phase = state.PhaseImplementation
+	store := state.NewStore()
+	if err := store.Save(root, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, next); err != nil {
+		t.Fatalf("transition skipped specification: %v", err)
+	}
+}
+
 func TestTransitionRequiresBlockerIntentAnswerAndPullRequestPersistence(t *testing.T) {
 	t.Run("block and resume", func(t *testing.T) {
 		root := t.TempDir()

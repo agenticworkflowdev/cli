@@ -116,6 +116,7 @@ type Manifest struct {
 	Branch            string          `json:"branch"`
 	BaseSHA           string          `json:"base_sha"`
 	Worktree          string          `json:"worktree"`
+	SkipSpecification bool            `json:"skip_specification,omitempty"`
 	SpecificationPath string          `json:"specification_path,omitempty"`
 	Review            *ReviewCounters `json:"review,omitempty"`
 	BlockerSequence   int             `json:"blocker_sequence,omitempty"`
@@ -205,6 +206,12 @@ func (manifest Manifest) Validate() error {
 	legacySpecificationPath := path.Join(".awdev", "specs", manifest.WorkflowID+".md")
 	if manifest.SpecificationPath != "" && manifest.SpecificationPath != wantSpecificationPath && manifest.SpecificationPath != legacySpecificationPath {
 		return fmt.Errorf("specification path must be %q", wantSpecificationPath)
+	}
+	if manifest.SkipSpecification && manifest.SpecificationPath != "" {
+		return errors.New("a skipped specification cannot have a specification path")
+	}
+	if manifest.SkipSpecification && manifest.Phase == PhaseSpec {
+		return errors.New("a skipped specification cannot enter the specification phase")
 	}
 	if manifest.Review != nil {
 		if manifest.Review.MaxAttempts < 1 || manifest.Review.Attempt < 0 || manifest.Review.Attempt > manifest.Review.MaxAttempts {

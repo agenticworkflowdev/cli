@@ -39,7 +39,7 @@ func (service *TransitionService) Transition(controllerRoot, workflowID string, 
 	if !current.hasSameBootstrap(next) {
 		return errors.New("transition cannot change immutable workflow bootstrap data")
 	}
-	if !allowedTransition(current.Phase, current.Status, next.Phase, next.Status) {
+	if !allowedManifestTransition(current, next) {
 		return fmt.Errorf("invalid workflow transition %s/%s -> %s/%s", current.Phase, current.Status, next.Phase, next.Status)
 	}
 	if err := validateTransitionData(current, next); err != nil {
@@ -49,6 +49,15 @@ func (service *TransitionService) Transition(controllerRoot, workflowID string, 
 		return fmt.Errorf("persist workflow transition: %w", err)
 	}
 	return nil
+}
+
+func allowedManifestTransition(current, next Manifest) bool {
+	if allowedTransition(current.Phase, current.Status, next.Phase, next.Status) {
+		return true
+	}
+	return current.SkipSpecification && next.SkipSpecification &&
+		current.Phase == PhaseInit && current.Status == StatusRunning &&
+		next.Phase == PhaseImplementation && next.Status == StatusRunning
 }
 
 func validateTransitionData(current, next Manifest) error {
@@ -207,6 +216,7 @@ func (manifest Manifest) hasSameBootstrap(other Manifest) bool {
 		manifest.Branch == other.Branch &&
 		manifest.BaseSHA == other.BaseSHA &&
 		manifest.Worktree == other.Worktree &&
+		manifest.SkipSpecification == other.SkipSpecification &&
 		sameSpecificationPath(manifest.SpecificationPath, other.SpecificationPath)
 }
 

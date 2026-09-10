@@ -501,7 +501,7 @@ func TestHelpShowsSourceAwareForms(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("execute help: %v", err)
 	}
-	for _, want := range []string{"awdev run SOURCE NUMBER", "awdev run github NUMBER"} {
+	for _, want := range []string{"awdev run SOURCE NUMBER", "awdev run github NUMBER", "--skip-spec"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("help %q does not contain %q", output.String(), want)
 		}
@@ -514,7 +514,7 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 		WorkingDirectory: func() (string, error) { return "/repo", nil },
 		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateConfig:   func(string) error { return nil },
-		RunGitHub: func(_ context.Context, root string, number int, _ cli.ProgressReporter) (workflow.RunResult, error) {
+		RunGitHub: func(_ context.Context, root string, number int, _ workflow.RunOptions, _ cli.ProgressReporter) (workflow.RunResult, error) {
 			if root != "/repo" || number != 17 {
 				t.Fatalf("run service inputs = %q, %d", root, number)
 			}
@@ -554,13 +554,38 @@ func TestRunGitHubRendersApplicationServiceResult(t *testing.T) {
 	}
 }
 
+func TestRunGitHubPassesSkipSpecificationOptionAfterIssueNumber(t *testing.T) {
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return nil },
+		RunGitHub: func(_ context.Context, _ string, _ int, options workflow.RunOptions, _ cli.ProgressReporter) (workflow.RunResult, error) {
+			if !options.SkipSpecification {
+				t.Fatal("run service did not receive skip-spec option")
+			}
+			return workflow.RunResult{
+				WorkflowID: cliTestWorkflowID,
+				Outcome:    workflow.RunExisting,
+				Existing:   state.ExistingWorkflow{Exists: true, Manifest: &state.Manifest{Phase: state.PhaseDone, Status: state.StatusDone}},
+			}, nil
+		},
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(new(bytes.Buffer))
+	command.SetArgs([]string{"run", "github", "17", "--skip-spec"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+}
+
 func TestRunGitHubRendersExistingWorkflow(t *testing.T) {
 	var output bytes.Buffer
 	services := cli.Services{
 		WorkingDirectory: func() (string, error) { return "/repo", nil },
 		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateConfig:   func(string) error { return nil },
-		RunGitHub: func(context.Context, string, int, cli.ProgressReporter) (workflow.RunResult, error) {
+		RunGitHub: func(context.Context, string, int, workflow.RunOptions, cli.ProgressReporter) (workflow.RunResult, error) {
 			return workflow.RunResult{
 				WorkflowID: cliTestWorkflowID,
 				Outcome:    workflow.RunExisting,
@@ -586,7 +611,7 @@ func TestRunGitHubProvidesAVisibleProgressWriterToTheService(t *testing.T) {
 		WorkingDirectory: func() (string, error) { return "/repo", nil },
 		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
 		ValidateConfig:   func(string) error { return nil },
-		RunGitHub: func(_ context.Context, _ string, _ int, progress cli.ProgressReporter) (workflow.RunResult, error) {
+		RunGitHub: func(_ context.Context, _ string, _ int, _ workflow.RunOptions, progress cli.ProgressReporter) (workflow.RunResult, error) {
 			want := "agent progress\n"
 			progress(cli.ProgressUpdate{Message: "agent progress"})
 			if got := output.String(); got != want {

@@ -53,7 +53,7 @@ type Services struct {
 	ValidateExistingConfig func(string) error
 	Initialize             func(string, agent.Provider, initrepo.Options) (initrepo.Result, error)
 	ValidateConfig         func(string) error
-	RunGitHub              func(context.Context, string, int, ProgressReporter) (workflow.RunResult, error)
+	RunGitHub              func(context.Context, string, int, workflow.RunOptions, ProgressReporter) (workflow.RunResult, error)
 	ResumeGitHub           func(context.Context, string, int, ProgressReporter) (workflow.ResumeResult, error)
 	RetryGitHub            func(context.Context, string, int, ProgressReporter) (workflow.PublicationResult, error)
 	StatusGitHub           func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error)
