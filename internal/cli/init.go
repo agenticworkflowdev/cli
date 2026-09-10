@@ -74,15 +74,13 @@ func writeInitializationResult(command *cobra.Command, result initrepo.Result, p
 		return fmt.Errorf("unknown .gitignore initialization status %q", result.Gitignore)
 	}
 	if result.Skill != nil {
-		if err := writeSkillFileResult(writer, ".agents/skills/awdev/SKILL.md", result.Skill.Instructions); err != nil {
-			return err
-		}
-		metadataPath := result.Skill.MetadataPath
-		if metadataPath == "" {
-			metadataPath = ".agents/skills/awdev/agents/openai.yaml"
-		}
-		if err := writeSkillFileResult(writer, metadataPath, result.Skill.Metadata); err != nil {
-			return err
+		for _, file := range result.Skill.Files {
+			if file.Path == "" {
+				return errors.New("skill file path is empty")
+			}
+			if err := writeSkillFileResult(writer, file.Path, file.Status); err != nil {
+				return err
+			}
 		}
 	}
 

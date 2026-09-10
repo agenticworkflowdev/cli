@@ -51,10 +51,3 @@ func RepositorySkill() fs.FS {
 	}
 	return skill
 }
-
-// SkillMetadataFiles maps each agent provider to the skill metadata filename it
-// installs under .agents/skills/awdev/agents/.
-var SkillMetadataFiles = map[agent.Provider]string{
-	agent.ProviderCodex:      "openai.yaml",
-	agent.ProviderClaudeCode: "anthropic.yaml",
-}

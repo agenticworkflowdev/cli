@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # AWDev
 
-Use this skill only when the user explicitly invokes `$awdev`.
+Use this skill only when the user explicitly invokes it.
 
 Dispatch exactly one of these source-aware CLI commands from the repository:
 

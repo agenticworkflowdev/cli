@@ -30,11 +30,19 @@ var ignoreEntries = []string{
 	".awdev/worktrees/",
 }
 
-var skillDirectories = []string{
-	".agents",
-	".agents/skills",
-	".agents/skills/awdev",
-	".agents/skills/awdev/agents",
+type skillInstallation struct {
+	source      string
+	destination string
+}
+
+var skillInstallations = map[agent.Provider][]skillInstallation{
+	agent.ProviderCodex: {
+		{source: "SKILL.md", destination: ".agents/skills/awdev/SKILL.md"},
+		{source: "agents/openai.yaml", destination: ".agents/skills/awdev/agents/openai.yaml"},
+	},
+	agent.ProviderClaudeCode: {
+		{source: "SKILL.md", destination: ".claude/skills/awdev/SKILL.md"},
+	},
 }
 
 // Options controls optional repository integrations installed by Initialize.
@@ -50,13 +58,16 @@ const (
 	FileRetained FileStatus = "retained"
 )
 
-// SkillResult contains the outcomes for the optional repository agent skill.
+// SkillFileResult contains the outcome for one optional repository skill file.
+type SkillFileResult struct {
+	Path   string
+	Status FileStatus
+}
+
+// SkillResult contains the provider-specific files installed for the optional
+// repository agent skill.
 type SkillResult struct {
-	Instructions FileStatus
-	Metadata     FileStatus
-	// MetadataPath is the repository-relative path of the installed provider
-	// skill metadata file (its basename varies per agent provider).
-	MetadataPath string
+	Files []SkillFileResult
 }
 
 // GitignoreStatus describes how initialization handled .gitignore.
@@ -146,41 +157,44 @@ func isConfigTemplate(path string) bool {
 }
 
 func installSkill(controllerRoot string, provider agent.Provider) (SkillResult, error) {
-	for _, relative := range skillDirectories {
-		if _, err := ensureDirectory(filepath.Join(controllerRoot, filepath.FromSlash(relative))); err != nil {
-			return SkillResult{}, fmt.Errorf("prepare %s: %w", relative, err)
-		}
-	}
-
-	install := func(source, destination string) (FileStatus, error) {
-		contents, err := fs.ReadFile(assets.RepositorySkill(), source)
-		if err != nil {
-			return FileRetained, err
-		}
-		created, err := createFileIfMissing(filepath.Join(controllerRoot, filepath.FromSlash(destination)), contents)
-		if err != nil {
-			return FileRetained, err
-		}
-		if created {
-			return FileCreated, nil
-		}
-		return FileRetained, nil
-	}
-
-	instructions, err := install("SKILL.md", ".agents/skills/awdev/SKILL.md")
-	if err != nil {
-		return SkillResult{}, fmt.Errorf("install .agents/skills/awdev/SKILL.md: %w", err)
-	}
-	metadataFile, ok := assets.SkillMetadataFiles[provider]
+	installations, ok := skillInstallations[provider]
 	if !ok {
-		return SkillResult{}, fmt.Errorf("no repository skill metadata for agent provider %q", provider)
+		return SkillResult{}, fmt.Errorf("no repository skill installation for agent provider %q", provider)
 	}
-	metadataRelative := ".agents/skills/awdev/agents/" + metadataFile
-	metadata, err := install("agents/"+metadataFile, metadataRelative)
-	if err != nil {
-		return SkillResult{}, fmt.Errorf("install %s: %w", metadataRelative, err)
+	result := SkillResult{Files: make([]SkillFileResult, 0, len(installations))}
+	for _, installation := range installations {
+		if err := ensureParentDirectories(controllerRoot, installation.destination); err != nil {
+			return SkillResult{}, err
+		}
+		contents, err := fs.ReadFile(assets.RepositorySkill(), installation.source)
+		if err != nil {
+			return SkillResult{}, fmt.Errorf("read repository skill asset %s: %w", installation.source, err)
+		}
+		created, err := createFileIfMissing(filepath.Join(controllerRoot, filepath.FromSlash(installation.destination)), contents)
+		if err != nil {
+			return SkillResult{}, fmt.Errorf("install %s: %w", installation.destination, err)
+		}
+		status := FileRetained
+		if created {
+			status = FileCreated
+		}
+		result.Files = append(result.Files, SkillFileResult{Path: installation.destination, Status: status})
 	}
-	return SkillResult{Instructions: instructions, Metadata: metadata, MetadataPath: metadataRelative}, nil
+	return result, nil
+}
+
+func ensureParentDirectories(controllerRoot, filePath string) error {
+	relativeDirectory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(filePath)))
+	current := controllerRoot
+	currentRelative := ""
+	for _, name := range strings.Split(relativeDirectory, "/") {
+		current = filepath.Join(current, name)
+		currentRelative = filepath.Join(currentRelative, name)
+		if _, err := ensureDirectory(current); err != nil {
+			return fmt.Errorf("prepare %s: %w", filepath.ToSlash(currentRelative), err)
+		}
+	}
+	return nil
 }
 
 func ensureDirectory(path string) (bool, error) {

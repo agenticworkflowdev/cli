@@ -189,66 +189,67 @@ func TestInitCommandInstallsSkillWhenSelectedAndReportsCreatedFiles(t *testing.T
 	t.Setenv("TERM", "dumb")
 
 	tests := []struct {
-		name         string
-		input        string
-		metadataPath string
-		instructions initrepo.FileStatus
-		metadata     initrepo.FileStatus
-		want         []string
+		name  string
+		input string
+		files []initrepo.SkillFileResult
+		want  []string
 	}{
 		{
-			name:         "codex both created",
-			input:        "2\n1\n",
-			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
-			instructions: initrepo.FileCreated,
-			metadata:     initrepo.FileCreated,
+			name:  "codex both created",
+			input: "2\n1\n",
+			files: []initrepo.SkillFileResult{
+				{Path: ".agents/skills/awdev/SKILL.md", Status: initrepo.FileCreated},
+				{Path: ".agents/skills/awdev/agents/openai.yaml", Status: initrepo.FileCreated},
+			},
 			want: []string{
 				"Created .agents/skills/awdev/SKILL.md.",
 				"Created .agents/skills/awdev/agents/openai.yaml.",
 			},
 		},
 		{
-			name:         "codex both retained",
-			input:        "2\n1\n",
-			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
-			instructions: initrepo.FileRetained,
-			metadata:     initrepo.FileRetained,
+			name:  "codex both retained",
+			input: "2\n1\n",
+			files: []initrepo.SkillFileResult{
+				{Path: ".agents/skills/awdev/SKILL.md", Status: initrepo.FileRetained},
+				{Path: ".agents/skills/awdev/agents/openai.yaml", Status: initrepo.FileRetained},
+			},
 			want: []string{
 				".agents/skills/awdev/SKILL.md already exists; retained unchanged.",
 				".agents/skills/awdev/agents/openai.yaml already exists; retained unchanged.",
 			},
 		},
 		{
-			name:         "codex instructions retained",
-			input:        "2\n1\n",
-			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
-			instructions: initrepo.FileRetained,
-			metadata:     initrepo.FileCreated,
+			name:  "codex instructions retained",
+			input: "2\n1\n",
+			files: []initrepo.SkillFileResult{
+				{Path: ".agents/skills/awdev/SKILL.md", Status: initrepo.FileRetained},
+				{Path: ".agents/skills/awdev/agents/openai.yaml", Status: initrepo.FileCreated},
+			},
 			want: []string{
 				".agents/skills/awdev/SKILL.md already exists; retained unchanged.",
 				"Created .agents/skills/awdev/agents/openai.yaml.",
 			},
 		},
 		{
-			name:         "codex metadata retained",
-			input:        "2\n1\n",
-			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
-			instructions: initrepo.FileCreated,
-			metadata:     initrepo.FileRetained,
+			name:  "codex metadata retained",
+			input: "2\n1\n",
+			files: []initrepo.SkillFileResult{
+				{Path: ".agents/skills/awdev/SKILL.md", Status: initrepo.FileCreated},
+				{Path: ".agents/skills/awdev/agents/openai.yaml", Status: initrepo.FileRetained},
+			},
 			want: []string{
 				"Created .agents/skills/awdev/SKILL.md.",
 				".agents/skills/awdev/agents/openai.yaml already exists; retained unchanged.",
 			},
 		},
 		{
-			name:         "claude-code both created",
-			input:        "1\n1\n",
-			metadataPath: ".agents/skills/awdev/agents/anthropic.yaml",
-			instructions: initrepo.FileCreated,
-			metadata:     initrepo.FileCreated,
+			name:  "claude-code instructions created",
+			input: "1\n1\n",
+			files: []initrepo.SkillFileResult{
+				{Path: ".claude/skills/awdev/SKILL.md", Status: initrepo.FileCreated},
+			},
 			want: []string{
-				"Created .agents/skills/awdev/SKILL.md.",
-				"Created .agents/skills/awdev/agents/anthropic.yaml.",
+				"Created .claude/skills/awdev/SKILL.md.",
 			},
 		},
 	}
@@ -263,11 +264,7 @@ func TestInitCommandInstallsSkillWhenSelectedAndReportsCreatedFiles(t *testing.T
 					options = got
 					return initrepo.Result{
 						Gitignore: initrepo.GitignoreRetained,
-						Skill: &initrepo.SkillResult{
-							Instructions: test.instructions,
-							Metadata:     test.metadata,
-							MetadataPath: test.metadataPath,
-						},
+						Skill:     &initrepo.SkillResult{Files: test.files},
 					}, nil
 				},
 				ValidateConfig: func(string) error { return nil },

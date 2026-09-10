@@ -33,11 +33,13 @@ state and worktree entries to `.gitignore`. Existing configuration, prompts,
 schemas, and unrelated ignore entries are retained.
 
 After selecting the agent, initialization asks whether to install the
-explicit-only repository `$awdev` skill. Answering **Yes** additively installs
-`.agents/skills/awdev/SKILL.md` and the agent metadata for the selected
-provider; answering **No** installs neither. Repeating initialization fills in
-missing skill files without changing existing ones, and the skill is never
-required to run a workflow.
+explicit-only repository AWDev skill (`$awdev` in Codex or `/awdev` in Claude
+Code). For Codex, answering **Yes** additively installs
+`.agents/skills/awdev/SKILL.md` and its OpenAI metadata.
+For Claude Code, it installs `.claude/skills/awdev/SKILL.md`. Answering **No**
+installs neither integration. Repeating initialization fills in missing skill
+files without changing existing ones, and the skill is never required to run a
+workflow.
 
 Run an issue and inspect its stable machine-readable status:
 

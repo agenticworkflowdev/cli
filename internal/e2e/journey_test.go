@@ -143,6 +143,52 @@ func TestRootHelpAndInitializationAreUsableAsBuilt(t *testing.T) {
 	}
 }
 
+func TestInitializationInstallsSkillForSelectedProviderAsBuilt(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantFiles     []string
+		unwantedPaths []string
+	}{
+		{
+			name:  "codex",
+			input: "2\n1\n",
+			wantFiles: []string{
+				".agents/skills/awdev/SKILL.md",
+				".agents/skills/awdev/agents/openai.yaml",
+			},
+			unwantedPaths: []string{".claude"},
+		},
+		{
+			name:          "claude-code",
+			input:         "1\n1\n",
+			wantFiles:     []string{".claude/skills/awdev/SKILL.md"},
+			unwantedPaths: []string{".agents"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, scenarioHappy)
+			output := fixture.runWithInput(t, test.input, "init")
+
+			for _, relative := range test.wantFiles {
+				if !strings.Contains(output, "Created "+relative+".") {
+					t.Errorf("init output %q does not report %q", output, relative)
+				}
+				if _, err := os.Stat(filepath.Join(fixture.root, filepath.FromSlash(relative))); err != nil {
+					t.Errorf("stat installed %s: %v", relative, err)
+				}
+			}
+			for _, relative := range test.unwantedPaths {
+				if _, err := os.Stat(filepath.Join(fixture.root, filepath.FromSlash(relative))); !os.IsNotExist(err) {
+					t.Errorf("unexpected provider skill path %s exists: %v", relative, err)
+				}
+			}
+		})
+	}
+}
+
 func TestHappyAndCorrectionJourneysAsBuilt(t *testing.T) {
 	tests := []struct {
 		name            string

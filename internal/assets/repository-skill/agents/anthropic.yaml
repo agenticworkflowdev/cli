@@ -1,6 +1,0 @@
-interface:
-  display_name: "AWDev"
-  short_description: "Dispatch an AWDev GitHub issue workflow"
-  default_prompt: "Use $awdev to dispatch an AWDev GitHub issue workflow."
-policy:
-  allow_implicit_invocation: false

@@ -33,26 +33,44 @@ var expectedLayout = []string{
 }
 
 type providerCase struct {
-	name          string
-	provider      agent.Provider
-	goldenDir     string
-	skillMetaYAML string
+	name       string
+	provider   agent.Provider
+	goldenDir  string
+	skillPaths []string
 }
 
 var providerCases = []providerCase{
-	{name: "codex", provider: agent.ProviderCodex, goldenDir: "codex", skillMetaYAML: "openai.yaml"},
-	{name: "claude-code", provider: agent.ProviderClaudeCode, goldenDir: "claude-code", skillMetaYAML: "anthropic.yaml"},
+	{
+		name:      "codex",
+		provider:  agent.ProviderCodex,
+		goldenDir: "codex",
+		skillPaths: []string{
+			".agents/skills/awdev/SKILL.md",
+			".agents/skills/awdev/agents/openai.yaml",
+		},
+	},
+	{
+		name:       "claude-code",
+		provider:   agent.ProviderClaudeCode,
+		goldenDir:  "claude-code",
+		skillPaths: []string{".claude/skills/awdev/SKILL.md"},
+	},
 }
 
-func skillLayout(metadataYAML string) []string {
-	return []string{
-		".agents",
-		".agents/skills",
-		".agents/skills/awdev",
-		".agents/skills/awdev/SKILL.md",
-		".agents/skills/awdev/agents",
-		".agents/skills/awdev/agents/" + metadataYAML,
+func skillLayout(pc providerCase) []string {
+	entries := make(map[string]struct{})
+	for _, skillPath := range pc.skillPaths {
+		entries[skillPath] = struct{}{}
+		for directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(skillPath))); directory != "."; directory = filepath.ToSlash(filepath.Dir(filepath.FromSlash(directory))) {
+			entries[directory] = struct{}{}
+		}
 	}
+	paths := make([]string, 0, len(entries))
+	for entry := range entries {
+		paths = append(paths, entry)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func TestInitializeCreatesCompleteLayoutAndIsIdempotent(t *testing.T) {
@@ -134,14 +152,11 @@ func TestInitializeWithSkillCreatesOptionalFilesAndIsIdempotent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("first initialize: %v", err)
 			}
-			if first.Skill == nil || first.Skill.Instructions != initrepo.FileCreated || first.Skill.Metadata != initrepo.FileCreated {
-				t.Fatalf("first skill result = %#v, want both files created", first.Skill)
+			wantFirst := skillFileResults(pc.skillPaths, initrepo.FileCreated)
+			if first.Skill == nil || !reflect.DeepEqual(first.Skill.Files, wantFirst) {
+				t.Fatalf("first skill result = %#v, want %#v", first.Skill, wantFirst)
 			}
-			wantMetadataPath := ".agents/skills/awdev/agents/" + pc.skillMetaYAML
-			if first.Skill.MetadataPath != wantMetadataPath {
-				t.Fatalf("skill metadata path = %q, want %q", first.Skill.MetadataPath, wantMetadataPath)
-			}
-			for _, path := range skillLayout(pc.skillMetaYAML) {
+			for _, path := range skillLayout(pc) {
 				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 					t.Errorf("stat %s: %v", path, err)
 				}
@@ -152,8 +167,9 @@ func TestInitializeWithSkillCreatesOptionalFilesAndIsIdempotent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("second initialize: %v", err)
 			}
-			if second.Skill == nil || second.Skill.Instructions != initrepo.FileRetained || second.Skill.Metadata != initrepo.FileRetained {
-				t.Fatalf("second skill result = %#v, want both files retained", second.Skill)
+			wantSecond := skillFileResults(pc.skillPaths, initrepo.FileRetained)
+			if second.Skill == nil || !reflect.DeepEqual(second.Skill.Files, wantSecond) {
+				t.Fatalf("second skill result = %#v, want %#v", second.Skill, wantSecond)
 			}
 			if after := snapshotFiles(t, root); !reflect.DeepEqual(after, before) {
 				t.Fatal("second opt-in initialization changed file bytes")
@@ -162,36 +178,27 @@ func TestInitializeWithSkillCreatesOptionalFilesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInitializeWithSkillInstallsClaudeCodeSkillInClaudeProjectDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := initrepo.Initialize(root, agent.ProviderClaudeCode, initrepo.Options{WithSkill: true}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, ".claude", "skills", "awdev", "SKILL.md")); err != nil {
+		t.Fatalf("stat Claude Code project skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("generic agent directory exists after Claude Code skill installation: %v", err)
+	}
+}
+
 func TestInitializeWithSkillAddsOnlyMissingFilesAndPreservesExistingBytes(t *testing.T) {
 	for _, pc := range providerCases {
-		metadataRelative := ".agents/skills/awdev/agents/" + pc.skillMetaYAML
-		tests := []struct {
-			name         string
-			existingPath string
-			missingPath  string
-			instructions initrepo.FileStatus
-			metadata     initrepo.FileStatus
-		}{
-			{
-				name:         "edited instructions",
-				existingPath: ".agents/skills/awdev/SKILL.md",
-				missingPath:  metadataRelative,
-				instructions: initrepo.FileRetained,
-				metadata:     initrepo.FileCreated,
-			},
-			{
-				name:         "edited metadata",
-				existingPath: metadataRelative,
-				missingPath:  ".agents/skills/awdev/SKILL.md",
-				instructions: initrepo.FileCreated,
-				metadata:     initrepo.FileRetained,
-			},
-		}
-
-		for _, test := range tests {
-			t.Run(pc.name+"/"+test.name, func(t *testing.T) {
+		for _, existingRelative := range pc.skillPaths {
+			t.Run(pc.name+"/"+existingRelative, func(t *testing.T) {
 				root := t.TempDir()
-				existingPath := filepath.Join(root, filepath.FromSlash(test.existingPath))
+				existingPath := filepath.Join(root, filepath.FromSlash(existingRelative))
 				if err := os.MkdirAll(filepath.Dir(existingPath), 0o755); err != nil {
 					t.Fatalf("create existing file directory: %v", err)
 				}
@@ -204,12 +211,20 @@ func TestInitializeWithSkillAddsOnlyMissingFilesAndPreservesExistingBytes(t *tes
 				if err != nil {
 					t.Fatalf("initialize: %v", err)
 				}
-				if result.Skill == nil || result.Skill.Instructions != test.instructions || result.Skill.Metadata != test.metadata {
-					t.Fatalf("skill result = %#v, want instructions %q and metadata %q", result.Skill, test.instructions, test.metadata)
+				wantFiles := skillFileResults(pc.skillPaths, initrepo.FileCreated)
+				for index := range wantFiles {
+					if wantFiles[index].Path == existingRelative {
+						wantFiles[index].Status = initrepo.FileRetained
+					}
+				}
+				if result.Skill == nil || !reflect.DeepEqual(result.Skill.Files, wantFiles) {
+					t.Fatalf("skill result = %#v, want %#v", result.Skill, wantFiles)
 				}
 				assertFileBytes(t, existingPath, wantExisting)
-				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(test.missingPath))); err != nil {
-					t.Fatalf("stat installed missing file: %v", err)
+				for _, relative := range pc.skillPaths {
+					if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+						t.Fatalf("stat installed %s: %v", relative, err)
+					}
 				}
 			})
 		}
@@ -223,13 +238,12 @@ func TestInstalledSkillIsAnExplicitOnlyCLIDispatcher(t *testing.T) {
 			if _, err := initrepo.Initialize(root, pc.provider, initrepo.Options{WithSkill: true}); err != nil {
 				t.Fatalf("initialize: %v", err)
 			}
-			instructions, err := os.ReadFile(filepath.Join(root, ".agents", "skills", "awdev", "SKILL.md"))
+			instructions, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(pc.skillPaths[0])))
 			if err != nil {
 				t.Fatalf("read instructions: %v", err)
 			}
-			metadata, err := os.ReadFile(filepath.Join(root, ".agents", "skills", "awdev", "agents", pc.skillMetaYAML))
-			if err != nil {
-				t.Fatalf("read metadata: %v", err)
+			if !strings.Contains(string(instructions), "disable-model-invocation: true") {
+				t.Error("instructions do not require explicit invocation")
 			}
 			for _, command := range []string{"awdev run github NUMBER", "awdev status github NUMBER", "awdev resume github NUMBER"} {
 				if !strings.Contains(string(instructions), command) {
@@ -246,14 +260,20 @@ func TestInstalledSkillIsAnExplicitOnlyCLIDispatcher(t *testing.T) {
 					t.Errorf("instructions contain out-of-scope claim %q", claim)
 				}
 			}
-			wantMetadata := "interface:\n" +
-				"  display_name: \"AWDev\"\n" +
-				"  short_description: \"Dispatch an AWDev GitHub issue workflow\"\n" +
-				"  default_prompt: \"Use $awdev to dispatch an AWDev GitHub issue workflow.\"\n" +
-				"policy:\n" +
-				"  allow_implicit_invocation: false\n"
-			if string(metadata) != wantMetadata {
-				t.Fatalf("metadata = %q, want approved explicit-only fixture %q", metadata, wantMetadata)
+			if len(pc.skillPaths) > 1 {
+				metadata, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(pc.skillPaths[1])))
+				if err != nil {
+					t.Fatalf("read metadata: %v", err)
+				}
+				wantMetadata := "interface:\n" +
+					"  display_name: \"AWDev\"\n" +
+					"  short_description: \"Dispatch an AWDev GitHub issue workflow\"\n" +
+					"  default_prompt: \"Use $awdev to dispatch an AWDev GitHub issue workflow.\"\n" +
+					"policy:\n" +
+					"  allow_implicit_invocation: false\n"
+				if string(metadata) != wantMetadata {
+					t.Fatalf("metadata = %q, want approved explicit-only fixture %q", metadata, wantMetadata)
+				}
 			}
 		})
 	}
@@ -346,6 +366,14 @@ func assertFileBytes(t *testing.T, path string, want []byte) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s bytes = %q, want %q", path, got, want)
 	}
+}
+
+func skillFileResults(paths []string, status initrepo.FileStatus) []initrepo.SkillFileResult {
+	results := make([]initrepo.SkillFileResult, 0, len(paths))
+	for _, path := range paths {
+		results = append(results, initrepo.SkillFileResult{Path: path, Status: status})
+	}
+	return results
 }
 
 func stringPointer(value string) *string {
