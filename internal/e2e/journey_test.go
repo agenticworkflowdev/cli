@@ -129,12 +129,17 @@ func TestRootHelpAndInitializationAreUsableAsBuilt(t *testing.T) {
 		}
 	}
 
-	output = fixture.runWithInput(t, "2\n", "init")
-	if !strings.Contains(output, "Initialization complete. AWDev is configured to use Codex.") {
-		t.Fatalf("init output = %q", output)
+	output = fixture.runWithInput(t, "2\n2\n", "init")
+	for _, expected := range []string{"Install skills:", "Initialization complete. AWDev is configured to use Codex."} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("init output = %q, missing %q", output, expected)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, ".awdev", "config.json")); err != nil {
 		t.Fatalf("initialized config: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf(".agents present after declining skills: %v", err)
 	}
 }
 
@@ -386,7 +391,7 @@ func newFixtureForProvider(t *testing.T, mode scenarioMode, provider agentProvid
 
 func (fixture fixture) initialize(t *testing.T) {
 	t.Helper()
-	fixture.runWithInput(t, "2\n", "init")
+	fixture.runWithInput(t, "2\n2\n", "init")
 	configuration := map[string]any{
 		"schema_version":  1,
 		"agent":           map[string]any{"provider": fixture.provider.config, "timeout": "30s"},

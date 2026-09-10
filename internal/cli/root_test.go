@@ -80,6 +80,9 @@ func TestInitCommandOffersAndHandlesBothAgents(t *testing.T) {
 			if !strings.Contains(output.String(), "Select the AI:") {
 				t.Errorf("output %q does not contain prompt title", output.String())
 			}
+			if !strings.Contains(output.String(), "Install skills:") {
+				t.Errorf("output %q does not contain skill installation prompt", output.String())
+			}
 			for _, option := range []string{"Claude Code", "Codex"} {
 				if !strings.Contains(output.String(), option) {
 					t.Errorf("output %q does not contain option %q", output.String(), option)
@@ -109,7 +112,7 @@ func TestInitCommandReportsSelectorCancellationBeforeServices(t *testing.T) {
 	command.SetArgs([]string{"init"})
 
 	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "select agent") {
+	if err == nil || !strings.Contains(err.Error(), "select initialization options") {
 		t.Fatalf("execute error = %v, want selector error", err)
 	}
 	if servicesCalled {
@@ -182,7 +185,7 @@ func TestInitCommandPrintsConciseSummary(t *testing.T) {
 	}
 }
 
-func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
+func TestInitCommandInstallsSkillWhenSelectedAndReportsCreatedFiles(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 
 	tests := []struct {
@@ -195,7 +198,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 	}{
 		{
 			name:         "codex both created",
-			input:        "2\n",
+			input:        "2\n1\n",
 			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileCreated,
 			metadata:     initrepo.FileCreated,
@@ -206,7 +209,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 		},
 		{
 			name:         "codex both retained",
-			input:        "2\n",
+			input:        "2\n1\n",
 			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileRetained,
 			metadata:     initrepo.FileRetained,
@@ -217,7 +220,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 		},
 		{
 			name:         "codex instructions retained",
-			input:        "2\n",
+			input:        "2\n1\n",
 			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileRetained,
 			metadata:     initrepo.FileCreated,
@@ -228,7 +231,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 		},
 		{
 			name:         "codex metadata retained",
-			input:        "2\n",
+			input:        "2\n1\n",
 			metadataPath: ".agents/skills/awdev/agents/openai.yaml",
 			instructions: initrepo.FileCreated,
 			metadata:     initrepo.FileRetained,
@@ -239,7 +242,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 		},
 		{
 			name:         "claude-code both created",
-			input:        "1\n",
+			input:        "1\n1\n",
 			metadataPath: ".agents/skills/awdev/agents/anthropic.yaml",
 			instructions: initrepo.FileCreated,
 			metadata:     initrepo.FileCreated,
@@ -273,7 +276,7 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 			command := cli.NewRootCommand(services)
 			command.SetIn(strings.NewReader(test.input))
 			command.SetOut(&output)
-			command.SetArgs([]string{"init", "--with-skill"})
+			command.SetArgs([]string{"init"})
 
 			if err := command.Execute(); err != nil {
 				t.Fatalf("execute init: %v", err)
@@ -287,6 +290,48 @@ func TestInitCommandPassesWithSkillAndReportsCreatedFiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInitCommandSkipsSkillInstallationWhenNotSelected(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+
+	var options initrepo.Options
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		Initialize: func(_ string, _ agent.Provider, got initrepo.Options) (initrepo.Result, error) {
+			options = got
+			return initrepo.Result{AwdevDirectoryCreated: true, Gitignore: initrepo.GitignoreCreated}, nil
+		},
+		ValidateConfig: func(string) error { return nil },
+	}
+	var output bytes.Buffer
+	command := cli.NewRootCommand(services)
+	command.SetIn(strings.NewReader("2\n2\n"))
+	command.SetOut(&output)
+	command.SetArgs([]string{"init"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute init: %v", err)
+	}
+	if options.WithSkill {
+		t.Fatal("initialize options enabled skill installation without selection")
+	}
+	if strings.Contains(output.String(), "SKILL.md") {
+		t.Errorf("init output %q unexpectedly reports skill files", output.String())
+	}
+}
+
+func TestInitCommandRejectsWithSkillFlag(t *testing.T) {
+	command := cli.NewRootCommand(cli.Services{})
+	command.SetOut(new(bytes.Buffer))
+	command.SetErr(new(bytes.Buffer))
+	command.SetArgs([]string{"init", "--with-skill"})
+
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("execute error = %v, want unknown flag error", err)
 	}
 }
 
