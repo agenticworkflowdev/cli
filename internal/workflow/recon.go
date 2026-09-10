@@ -12,9 +12,10 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
-// ReconArtifactWriter persists controller-owned reconnaissance output.
-type ReconArtifactWriter interface {
+// ReconArtifactStore persists and verifies controller-owned reconnaissance output.
+type ReconArtifactStore interface {
 	SaveRecon(string, string, []byte) error
+	ReadRecon(string, string) ([]byte, error)
 }
 
 // ReconResultDecoder validates and decodes the agent's reconnaissance result.
@@ -39,7 +40,7 @@ type ReconnaissanceCreator interface {
 type ReconnaissanceService struct {
 	reader     SpecificationManifestReader
 	transition SpecificationTransitioner
-	artifacts  ReconArtifactWriter
+	artifacts  ReconArtifactStore
 	prompt     SpecificationPromptRenderer
 	runner     agent.Runner
 	decoder    ReconResultDecoder
@@ -51,7 +52,7 @@ type ReconnaissanceService struct {
 func NewReconnaissanceService(
 	reader SpecificationManifestReader,
 	transition SpecificationTransitioner,
-	artifacts ReconArtifactWriter,
+	artifacts ReconArtifactStore,
 	promptRenderer SpecificationPromptRenderer,
 	runner agent.Runner,
 	decoder ReconResultDecoder,
@@ -124,8 +125,12 @@ func (service *ReconnaissanceService) Recon(ctx context.Context, controllerRoot,
 	if err := service.artifacts.SaveRecon(controllerRoot, workflowID, []byte(outcome.Recon)); err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("persist recon artifact: %w", err))
 	}
+	persistedRecon, err := service.artifacts.ReadRecon(controllerRoot, workflowID)
+	if err != nil {
+		return service.fail(controllerRoot, running, fmt.Errorf("verify persisted recon artifact: %w", err))
+	}
 	return ReconnaissanceResult{
-		Manifest: running, Recon: outcome.Recon, SessionID: runResult.SessionID, Progress: runResult.Progress,
+		Manifest: running, Recon: string(persistedRecon), SessionID: runResult.SessionID, Progress: runResult.Progress,
 	}, nil
 }
 

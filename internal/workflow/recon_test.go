@@ -33,7 +33,7 @@ func TestReconRunsReadOnlyThroughAgentAbstractionAndPersistsArtifact(t *testing.
 	if err != nil {
 		t.Fatalf("recon: %v", err)
 	}
-	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode:recon", "save:recon"}
+	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode:recon", "save:recon", "read:recon"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -91,6 +91,11 @@ func (store *reconArtifacts) SaveRecon(_ string, _ string, contents []byte) erro
 	store.called = true
 	store.contents = append([]byte(nil), contents...)
 	return store.err
+}
+
+func (store *reconArtifacts) ReadRecon(_ string, _ string) ([]byte, error) {
+	*store.events = append(*store.events, "read:recon")
+	return append([]byte(nil), store.contents...), store.err
 }
 
 type reconDecoder struct {
