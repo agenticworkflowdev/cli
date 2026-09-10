@@ -198,18 +198,18 @@ func TestHappyAndCorrectionJourneysAsBuilt(t *testing.T) {
 	}{
 		{
 			name: "happy", mode: scenarioHappy,
-			wantPromptOrder: []string{"Create an implementation specification", "Implement the supplied specification", "Review the current worktree"},
-			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:spec", "codex:implementation", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
+			wantPromptOrder: []string{"Gather the minimum codebase knowledge", "Create an implementation specification", "Implement the supplied specification", "Review the current worktree"},
+			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:recon", "codex:spec", "codex:implementation", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
 		},
 		{
 			name: "check correction", mode: scenarioCheckFix,
-			wantPromptOrder: []string{"Create an implementation specification", "Implement the supplied specification", "Repair the implementation", "Review the current worktree"},
-			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:spec", "codex:implementation", "check", "codex:check-repair", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
+			wantPromptOrder: []string{"Gather the minimum codebase knowledge", "Create an implementation specification", "Implement the supplied specification", "Repair the implementation", "Review the current worktree"},
+			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:recon", "codex:spec", "codex:implementation", "check", "codex:check-repair", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
 		},
 		{
 			name: "review correction", mode: scenarioReviewFix,
-			wantPromptOrder: []string{"Create an implementation specification", "Implement the supplied specification", "Review the current worktree", "Correct the implementation", "Review the current worktree"},
-			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:spec", "codex:implementation", "check", "codex:review", "codex:review-correction", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
+			wantPromptOrder: []string{"Gather the minimum codebase knowledge", "Create an implementation specification", "Implement the supplied specification", "Review the current worktree", "Correct the implementation", "Review the current worktree"},
+			wantTrace:       []string{"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate", "codex:recon", "codex:spec", "codex:implementation", "check", "codex:review", "codex:review-correction", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create"},
 		},
 	}
 
@@ -270,7 +270,7 @@ func skipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T, provider
 	if !strings.Contains(output, "Pull request created: https://github.com/owner/repo/pull/77") {
 		t.Fatalf("run output = %q", output)
 	}
-	if strings.Contains(output, "Specification agent") || strings.Contains(output, "Specification complete") {
+	if strings.Contains(output, "Recon agent") || strings.Contains(output, "Recon complete") || strings.Contains(output, "Specification agent") || strings.Contains(output, "Specification complete") {
 		t.Fatalf("skip-spec run reported specification progress: %q", output)
 	}
 
@@ -362,7 +362,7 @@ func humanBlockerResumesThroughOneMarkedComment(t *testing.T, provider agentProv
 	if commentPosts != 1 {
 		t.Fatalf("blocker comment posts = %d, want 1", commentPosts)
 	}
-	want := []string{"Create an implementation specification", "Continue the recorded workflow phase", "Implement the supplied specification", "Review the current worktree"}
+	want := []string{"Gather the minimum codebase knowledge", "Create an implementation specification", "Continue the recorded workflow phase", "Implement the supplied specification", "Review the current worktree"}
 	if got := prompts(events); !promptsMatchPrefixes(got, want) {
 		t.Fatalf("agent prompt order = %q, want %q", got, want)
 	}
@@ -600,8 +600,8 @@ func assertGitHubBootstrap(t *testing.T, events []traceEvent, agentTool string) 
 		t.Fatalf("initial manifest existed before worktree validation: %#v", events[validationIndex])
 	}
 	firstAgent := events[agentIndex]
-	if !strings.HasPrefix(firstAgent.Stdin, "Create an implementation specification") || !firstAgent.ManifestPresent || !firstAgent.WorktreeRegistered {
-		t.Fatalf("first specification event lacks durable validated bootstrap: %#v", firstAgent)
+	if !strings.HasPrefix(firstAgent.Stdin, "Gather the minimum codebase knowledge") || !firstAgent.ManifestPresent || !firstAgent.WorktreeRegistered {
+		t.Fatalf("first recon event lacks durable validated bootstrap: %#v", firstAgent)
 	}
 }
 
@@ -738,6 +738,8 @@ func journeyTrace(events []traceEvent) []string {
 
 func agentTraceLabel(tool, prompt string) string {
 	switch {
+	case strings.HasPrefix(prompt, "Gather the minimum codebase knowledge"):
+		return tool + ":recon"
 	case strings.HasPrefix(prompt, "Create an implementation specification"):
 		return tool + ":spec"
 	case strings.HasPrefix(prompt, "Implement the supplied specification"), strings.HasPrefix(prompt, "Implement the persisted issue description directly"):

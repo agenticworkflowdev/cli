@@ -94,3 +94,33 @@ func TestResultDecoderRejectsInvalidInstalledSchemaAtConstruction(t *testing.T) 
 		t.Fatal("invalid JSON Schema was accepted")
 	}
 }
+
+func TestReconResultDecoderRequiresACompleteMarkdownArtifact(t *testing.T) {
+	decoder, err := agent.NewReconResultDecoder([]byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recon"],
+  "properties": {"recon": {"type": "string"}}
+}`))
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	got, err := decoder.Decode([]byte(`{"recon":"# Recon\n\n## Issue\n\nAdd the substep.\n"}`))
+	if err != nil {
+		t.Fatalf("decode recon: %v", err)
+	}
+	if got.Recon != "# Recon\n\n## Issue\n\nAdd the substep.\n" {
+		t.Fatalf("recon = %q", got.Recon)
+	}
+
+	for _, input := range []string{
+		`{"recon":""}`,
+		`{"recon":"not markdown"}`,
+		`{"recon":"# Recon\n","extra":true}`,
+	} {
+		if _, err := decoder.Decode([]byte(input)); err == nil {
+			t.Fatalf("invalid recon result was accepted: %s", input)
+		}
+	}
+}

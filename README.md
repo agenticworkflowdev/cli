@@ -49,6 +49,9 @@ awdev status github 123
 awdev status github 123 --json
 ```
 
+During reconnaissance, status remains in the top-level `spec` phase and reports
+`substep: recon`; recon is not a separate workflow phase.
+
 To implement directly from the source item's saved description without running
 the specification agent or creating a specification file, add `--skip-spec`:
 
@@ -116,10 +119,13 @@ controls review/correction attempts.
 
 ## Prompt templates
 
-`awdev init` installs six editable templates in `.awdev/prompts/`: specification,
-implementation, review, check repair, review repair, and blocked-workflow
-continuation. They discover the target repository's languages, architecture,
-and tools instead of assuming frontend/backend folders or a particular stack.
+`awdev init` installs seven editable templates in `.awdev/prompts/`: reconnaissance,
+specification, implementation, review, check repair, review repair, and
+blocked-workflow continuation. Recon first gathers the minimum issue-directed
+codebase context, preferring repository-provided code intelligence when available;
+specification then consumes that concise context. The prompts discover the target
+repository's languages, architecture, and tools instead of assuming
+frontend/backend folders or a particular stack.
 See [prompt template guidance](docs/prompt-templates.md) for their responsibilities,
 inputs, and customization rules.
 
@@ -135,6 +141,8 @@ Controller state remains in the original checkout:
 - `.awdev/issues/<workflow-id>/manifest.json` is the durable workflow record,
   including provider session identities used to continue specification and
   implementation work across repair and blocker/resume boundaries.
+- `.awdev/issues/<workflow-id>/recon.md` is the concise codebase context produced
+  by the `recon` substep inside the `spec` phase.
 - `.awdev/issues/<workflow-id>/review.json` is current review evidence when
   present.
 - `.awdev/logs/` contains private diagnostic logs for command failures.

@@ -36,6 +36,9 @@ type PromptData struct {
 	Repository        string
 	Branch            string
 	BaseSHA           string
+	WorktreePath      string
+	ReconPath         string
+	Recon             string
 	SkipSpecification bool
 	SpecificationPath string
 	Issue             IssueData

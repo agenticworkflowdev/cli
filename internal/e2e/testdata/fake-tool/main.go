@@ -209,6 +209,11 @@ func runCodex(root string, args []string, input []byte) toolResult {
 	result := `{"status":"completed","summary":"done","question":""}`
 
 	switch {
+	case strings.HasPrefix(prompt, "Gather the minimum codebase knowledge"):
+		if access != "read-only" {
+			fatal(fmt.Errorf("recon access = %q", access))
+		}
+		result = `{"recon":"# Recon\n\n## Relevant architecture\n\n- The fake repository uses the established workflow.\n\n## Relevant tests\n\n- Exercise the end-to-end journey.\n"}`
 	case strings.HasPrefix(prompt, "Create an implementation specification"):
 		if settings.Mode == scenarioBlocker {
 			result = `{"status":"blocked","summary":"","question":"Which compatibility behavior should be used?"}`
@@ -328,6 +333,11 @@ func runClaude(root string, args []string, input []byte) toolResult {
 	result := `{"status":"completed","summary":"done","question":""}`
 
 	switch {
+	case strings.HasPrefix(prompt, "Gather the minimum codebase knowledge"):
+		if access != "read-only" {
+			fatal(fmt.Errorf("recon access = %q", access))
+		}
+		result = `{"recon":"# Recon\n\n## Relevant architecture\n\n- The fake repository uses the established workflow.\n\n## Relevant tests\n\n- Exercise the end-to-end journey.\n"}`
 	case strings.HasPrefix(prompt, "Create an implementation specification"):
 		if settings.Mode == scenarioBlocker {
 			result = `{"status":"blocked","summary":"","question":"Which compatibility behavior should be used?"}`

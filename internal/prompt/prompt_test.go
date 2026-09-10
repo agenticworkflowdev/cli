@@ -48,6 +48,78 @@ func TestDefaultSpecificationPromptMatchesGolden(t *testing.T) {
 	}
 }
 
+func TestDefaultReconPromptIsIssueDirectedAndToolAgnostic(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/recon.md")
+	if err != nil {
+		t.Fatalf("read default recon prompt: %v", err)
+	}
+	renderer, err := prompt.NewRenderer("recon", contents)
+	if err != nil {
+		t.Fatalf("compile recon prompt: %v", err)
+	}
+	got, err := renderer.Render(prompt.PromptData{
+		WorkflowID:   "wf_0123456789abcdef0123456789abcdef",
+		Repository:   "owner/repository",
+		Branch:       "gh-17-a-title",
+		BaseSHA:      strings.Repeat("a", 40),
+		WorktreePath: "/repo/.awdev/worktrees/gh-17-a-title",
+		ReconPath:    ".awdev/issues/wf_0123456789abcdef0123456789abcdef/recon.md",
+		Issue: prompt.IssueData{
+			Number: 17, URL: "https://github.com/owner/repository/issues/17",
+			Title: "Add recon {{.WorkflowID}}", Body: "Prefer a map when available.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("render recon prompt: %v", err)
+	}
+	for _, want := range []string{
+		"discover and prefer code-intelligence facilities already configured",
+		"An available map is a starting point",
+		"If no suitable facility exists, silently continue",
+		"If an optional facility fails, fall back",
+		"git ls-files",
+		"issue-directed",
+		"analogous implementations",
+		"relevant tests",
+		"Stop once",
+		"# Recon",
+		`"recon"`,
+		"/repo/.awdev/worktrees/gh-17-a-title",
+		"Add recon {{.WorkflowID}}",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered recon prompt does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDefaultSpecificationPromptReceivesReconAsUntrustedStartingContext(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/spec.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := prompt.NewRenderer("spec", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recon := "# Recon\n\n## Relevant code\n\n- internal/workflow/specification.go\n"
+	got, err := renderer.Render(prompt.PromptData{
+		WorkflowID: "wf_0123456789abcdef0123456789abcdef",
+		Repository: "owner/repository",
+		Branch:     "gh-17-a-title", BaseSHA: strings.Repeat("a", 40),
+		SpecificationPath: ".awdev/specs/gh-17-a-title.md", Recon: recon,
+		Issue: prompt.IssueData{Number: 17, Title: "Add recon", Body: "Body", URL: "https://github.com/owner/repository/issues/17"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"BEGIN UNTRUSTED RECON DATA", recon, "END UNTRUSTED RECON DATA"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("specification prompt does not contain %q", want)
+		}
+	}
+}
+
 func TestRendererTreatsIssueFieldsAsLiteralData(t *testing.T) {
 	templateText := "{{.Issue.Title}}\n---\n{{.Issue.Body}}\n---\n{{.SpecificationPath}}\n"
 	renderer, err := prompt.NewRenderer("spec", []byte(templateText))

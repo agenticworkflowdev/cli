@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	PromptRecon     = "recon"
 	PromptSpec      = "spec"
 	PromptImplement = "implement"
 	PromptFixChecks = "fix-checks"
@@ -15,10 +16,12 @@ const (
 	PromptResume    = "resume-blocked"
 
 	SchemaAgentResult  = "agent-result"
+	SchemaReconResult  = "recon-result"
 	SchemaReviewResult = "review-result"
 )
 
 var installedPromptFiles = map[string]string{
+	PromptRecon:     "recon.md",
 	PromptSpec:      "spec.md",
 	PromptImplement: "implement.md",
 	PromptFixChecks: "fix-checks.md",
@@ -29,6 +32,7 @@ var installedPromptFiles = map[string]string{
 
 var installedSchemaFiles = map[string]string{
 	SchemaAgentResult:  "agent-result.schema.json",
+	SchemaReconResult:  "recon-result.schema.json",
 	SchemaReviewResult: "review-result.schema.json",
 }
 

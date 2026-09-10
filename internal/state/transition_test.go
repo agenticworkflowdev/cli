@@ -105,6 +105,25 @@ func TestTransitionAllowsInitToImplementationOnlyWhenSpecificationWasSkipped(t *
 	}
 }
 
+func TestTransitionKeepsSpecificationSubstepsInForwardOrder(t *testing.T) {
+	root := t.TempDir()
+	store := state.NewStore()
+	recon := manifestAt(root, state.PhaseSpec, state.StatusRunning)
+	recon.Substep = state.SubstepRecon
+	if err := store.Save(root, recon); err != nil {
+		t.Fatal(err)
+	}
+
+	specification := recon
+	specification.Substep = state.SubstepSpecification
+	if err := state.NewTransitionService(store).Transition(root, recon.WorkflowID, specification); err != nil {
+		t.Fatalf("advance recon to specification: %v", err)
+	}
+	if err := state.NewTransitionService(store).Transition(root, recon.WorkflowID, recon); err == nil || !strings.Contains(err.Error(), "substep") {
+		t.Fatalf("backward substep transition error = %v", err)
+	}
+}
+
 func TestTransitionRequiresBlockerIntentAnswerAndPullRequestPersistence(t *testing.T) {
 	t.Run("block and resume", func(t *testing.T) {
 		root := t.TempDir()

@@ -57,6 +57,7 @@ type SpecificationCreator interface {
 type SpecificationService struct {
 	reader       SpecificationManifestReader
 	transition   SpecificationTransitioner
+	recon        ReconnaissanceCreator
 	prompt       SpecificationPromptRenderer
 	resumePrompt SpecificationPromptRenderer
 	runner       agent.Runner
@@ -66,9 +67,9 @@ type SpecificationService struct {
 }
 
 // NewSpecificationService constructs the specification phase service.
-func NewSpecificationService(reader SpecificationManifestReader, transition SpecificationTransitioner, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration, resumePrompt ...SpecificationPromptRenderer) *SpecificationService {
+func NewSpecificationService(reader SpecificationManifestReader, transition SpecificationTransitioner, recon ReconnaissanceCreator, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration, resumePrompt ...SpecificationPromptRenderer) *SpecificationService {
 	service := &SpecificationService{
-		reader: reader, transition: transition, prompt: promptRenderer,
+		reader: reader, transition: transition, recon: recon, prompt: promptRenderer,
 		runner: runner, decoder: decoder, schemaPath: schemaPath, timeout: timeout,
 	}
 	if len(resumePrompt) > 0 {
@@ -85,24 +86,26 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 		return SpecificationResult{}, err
 	}
 
-	current, err := service.reader.Read(controllerRoot, workflowID)
+	reconResult, err := service.recon.Recon(ctx, controllerRoot, workflowID)
 	if err != nil {
-		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification: %w", err)
+		return SpecificationResult{Manifest: reconResult.Manifest, Progress: reconResult.Progress}, err
 	}
-	if current.Phase != state.PhaseInit || current.Status != state.StatusRunning {
-		return SpecificationResult{}, fmt.Errorf("specification requires init/running state, got %s/%s", current.Phase, current.Status)
+	if reconResult.Manifest.Phase != state.PhaseSpec || reconResult.Manifest.Substep != state.SubstepRecon || reconResult.Manifest.Status != state.StatusRunning {
+		return SpecificationResult{Manifest: reconResult.Manifest}, errors.New("recon did not complete in spec/recon running state")
 	}
-	running := current
-	running.Phase = state.PhaseSpec
+	running := reconResult.Manifest
+	running.Substep = state.SubstepSpecification
 	running.Status = state.StatusRunning
 	running.SpecificationPath = ""
 	running.Blocker = nil
 	running.LastError = nil
 	if err := service.transition.Transition(controllerRoot, workflowID, running); err != nil {
-		return SpecificationResult{}, fmt.Errorf("persist spec/running transition: %w", err)
+		return SpecificationResult{}, fmt.Errorf("persist spec/specification transition: %w", err)
 	}
 
-	return service.run(ctx, controllerRoot, running, service.prompt)
+	result, err := service.run(ctx, controllerRoot, running, service.prompt, reconResult.Recon)
+	result.Progress = append(append([]agent.ProgressEvent(nil), reconResult.Progress...), result.Progress...)
+	return result, err
 }
 
 // Resume continues specification in its prior provider session using the
@@ -119,14 +122,14 @@ func (service *SpecificationService) Resume(ctx context.Context, controllerRoot,
 	if err != nil {
 		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification resume: %w", err)
 	}
-	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
+	if current.Phase != state.PhaseSpec || current.Substep == state.SubstepRecon || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
 		return SpecificationResult{}, fmt.Errorf("specification resume requires answered spec/running state, got %s/%s", current.Phase, current.Status)
 	}
-	return service.run(ctx, controllerRoot, current, service.resumePrompt)
+	return service.run(ctx, controllerRoot, current, service.resumePrompt, "")
 }
 
 func (service *SpecificationService) validate() error {
-	if service == nil || service.reader == nil || service.transition == nil || service.prompt == nil || service.runner == nil || service.decoder == nil {
+	if service == nil || service.reader == nil || service.transition == nil || service.recon == nil || service.prompt == nil || service.runner == nil || service.decoder == nil {
 		return errors.New("specification service is not fully configured")
 	}
 	if service.timeout <= 0 {
@@ -138,7 +141,7 @@ func (service *SpecificationService) validate() error {
 	return nil
 }
 
-func (service *SpecificationService) run(ctx context.Context, controllerRoot string, running state.Manifest, renderer SpecificationPromptRenderer) (SpecificationResult, error) {
+func (service *SpecificationService) run(ctx context.Context, controllerRoot string, running state.Manifest, renderer SpecificationPromptRenderer, recon string) (SpecificationResult, error) {
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, running.Worktree)
 	if err != nil {
 		return SpecificationResult{}, fmt.Errorf("resolve specification worktree: %w", err)
@@ -147,7 +150,7 @@ func (service *SpecificationService) run(ctx context.Context, controllerRoot str
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("derive specification path: %w", err))
 	}
-	promptText, err := renderer.Render(promptData(running, specificationPath))
+	promptText, err := renderer.Render(promptData(running, specificationPath, recon))
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("render specification prompt: %w", err))
 	}
@@ -209,10 +212,10 @@ func (service *SpecificationService) fail(controllerRoot string, running state.M
 	return SpecificationResult{Manifest: failed}, cause
 }
 
-func promptData(manifest state.Manifest, specificationPath string) prompt.PromptData {
+func promptData(manifest state.Manifest, specificationPath, recon string) prompt.PromptData {
 	data := prompt.PromptData{
 		WorkflowID: manifest.WorkflowID, Repository: manifest.Repository, Branch: manifest.Branch,
-		BaseSHA: manifest.BaseSHA, SkipSpecification: manifest.SkipSpecification, SpecificationPath: specificationPath,
+		BaseSHA: manifest.BaseSHA, SkipSpecification: manifest.SkipSpecification, SpecificationPath: specificationPath, Recon: recon,
 		Issue: prompt.IssueData{Number: manifest.Issue.Number, Title: manifest.Issue.Title, Body: manifest.Issue.Body, URL: manifest.Issue.URL},
 	}
 	if manifest.Blocker != nil && manifest.Blocker.Comment != nil && manifest.Blocker.Answer != nil {

@@ -149,12 +149,16 @@ esac
 output=
 previous=
 sandbox=
+schema=
 for argument in "$@"; do
   if [ "$previous" = "--output-last-message" ]; then output="$argument"; fi
   if [ "$previous" = "--sandbox" ]; then sandbox="$argument"; fi
+  if [ "$previous" = "--output-schema" ]; then schema="$argument"; fi
   previous="$argument"
 done
-if [ "$sandbox" = "read-only" ]; then
+if [ "${schema##*/}" = "recon-result.schema.json" ]; then
+  printf '%s' '{"recon":"# Recon\n\n## Relevant code\n\n- README.md\n"}' > "$output"
+elif [ "$sandbox" = "read-only" ]; then
   printf '%s' '{"approved":true,"findings":[]}' > "$output"
 else
   if [ ! -f "$PWD/.awdev/specs/gh-17-a-title.md" ]; then
@@ -197,6 +201,8 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 	}
 	wantOutput := "✓ Loaded GitHub issue #17\n" +
 		"✓ Created worktree gh-17-a-title\n" +
+		"● Recon agent\n  └─ inspecting relevant code...\n" +
+		"\n✓ Recon complete\n" +
 		"● Specification agent\n  └─ writing specification...\n" +
 		"\n✓ Specification complete\n" +
 		"● Implementation agent\n  └─ implementing changes...\n" +
@@ -220,6 +226,13 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-17"}' '{"type":"turn
 	}
 	if string(specificationContents) != "# Generated specification\n" {
 		t.Fatalf("generated specification = %q", specificationContents)
+	}
+	reconContents, err := os.ReadFile(filepath.Join(repository, ".awdev", "issues", manifest.WorkflowID, "recon.md"))
+	if err != nil {
+		t.Fatalf("read generated recon: %v", err)
+	}
+	if string(reconContents) != "# Recon\n\n## Relevant code\n\n- README.md\n" {
+		t.Fatalf("generated recon = %q", reconContents)
 	}
 	if got := gitOutputIn(t, worktree, "rev-parse", "HEAD"); got == baseSHA {
 		t.Fatalf("worktree HEAD was not advanced by controller commit: %q", got)

@@ -868,6 +868,23 @@ func TestStatusGitHubStableJSONGoldensForRunningFailedAndDone(t *testing.T) {
   "status": "running"
 }
 `},
+		{name: "recon", edit: func(manifest *state.Manifest) {
+			manifest.Phase = state.PhaseSpec
+			manifest.Substep = state.SubstepRecon
+		}, want: `{
+  "workflow_id": "wf_0123456789abcdef0123456789abcdef",
+  "source": "github",
+  "repository": "owner/repository",
+  "issue": {
+    "number": 17,
+    "title": "A title",
+    "url": "https://github.com/owner/repository/issues/17"
+  },
+  "phase": "spec",
+  "substep": "recon",
+  "status": "running"
+}
+`},
 		{name: "failed", edit: func(manifest *state.Manifest) {
 			manifest.Phase = state.PhaseImplementation
 			manifest.Status = state.StatusFailed

@@ -156,6 +156,7 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 	}
 	running := current
 	running.Phase = state.PhaseImplementation
+	running.Substep = ""
 	running.Status = state.StatusRunning
 	running.Blocker = nil
 	running.LastError = nil
@@ -211,7 +212,7 @@ func (service *ImplementationService) run(ctx context.Context, controllerRoot st
 	if err != nil {
 		return service.fail(controllerRoot, running, ImplementationResult{Manifest: running}, fmt.Errorf("derive implementation agent output directory: %w", err))
 	}
-	basePromptData := promptData(running, running.SpecificationPath)
+	basePromptData := promptData(running, running.SpecificationPath, "")
 	result := ImplementationResult{Manifest: running}
 	resumeSessionID, err := resumableAgentSession(running, implementationSessionRole, service.runner)
 	if err != nil {

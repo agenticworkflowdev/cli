@@ -32,13 +32,18 @@ func TestSpecificationPhasePersistsTransitionBeforeRenderingAndRunning(t *testin
 		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "thread-1"}, nil
 	}}
 	decoder := &specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeCompleted, Summary: "done"}}
-	service := workflow.NewSpecificationService(stateStore, stateStore, renderer, runner, decoder, filepath.Join(t.TempDir(), "agent-result.schema.json"), time.Minute)
+	recon := &specificationRecon{
+		state:  stateStore,
+		events: &events,
+		recon:  "# Recon\n\n## Relevant code\n\n- internal/workflow/specification.go\n",
+	}
+	service := workflow.NewSpecificationService(stateStore, stateStore, recon, renderer, runner, decoder, filepath.Join(t.TempDir(), "agent-result.schema.json"), time.Minute)
 
 	result, err := service.Create(context.Background(), controllerRoot, manifest.WorkflowID)
 	if err != nil {
 		t.Fatalf("create specification: %v", err)
 	}
-	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode", "transition:spec/running", "transition:spec/running"}
+	wantEvents := []string{"recon", "transition:spec/running", "render", "agent", "decode", "transition:spec/running", "transition:spec/running"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -50,6 +55,9 @@ func TestSpecificationPhasePersistsTransitionBeforeRenderingAndRunning(t *testin
 	}
 	if renderer.data.SpecificationPath != result.Manifest.SpecificationPath {
 		t.Fatalf("prompt specification path = %q, want %q", renderer.data.SpecificationPath, result.Manifest.SpecificationPath)
+	}
+	if renderer.data.Recon != recon.recon || result.Manifest.Substep != state.SubstepSpecification {
+		t.Fatalf("specification did not receive recon or persist its substep: data=%#v manifest=%#v", renderer.data, result.Manifest)
 	}
 	if runner.request.Prompt != "rendered prompt" || runner.request.Access != agent.AccessWorkspaceWrite || runner.request.Worktree != specificationWorktree(t, controllerRoot, manifest) {
 		t.Fatalf("agent request = %#v", runner.request)
@@ -70,6 +78,7 @@ func TestSpecificationPhaseReturnsTypedBlockerWithoutMisclassifyingItAsFailure(t
 	service := workflow.NewSpecificationService(
 		stateStore,
 		stateStore,
+		successfulSpecificationRecon(stateStore, &events),
 		&specificationPrompt{events: &events, rendered: "prompt"},
 		&specificationAgent{events: &events, result: agent.RunResult{FinalOutput: []byte(`{"status":"blocked","question":"Which API?"}`)}},
 		&specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeBlocked, Question: "Which API?"}},
@@ -87,9 +96,37 @@ func TestSpecificationPhaseReturnsTypedBlockerWithoutMisclassifyingItAsFailure(t
 	if result.Manifest.Phase != state.PhaseSpec || result.Manifest.Status != state.StatusRunning || result.Manifest.LastError != nil {
 		t.Fatalf("blocked result mutated technical state: %#v", result.Manifest)
 	}
-	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode"}
+	wantEvents := []string{"recon", "transition:spec/running", "render", "agent", "decode"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
+	}
+}
+
+func TestSpecificationDoesNotRunWhenReconFails(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := specificationManifest(t)
+	stateStore := &specificationState{manifest: manifest, events: &events}
+	runner := &specificationAgent{events: &events}
+	service := workflow.NewSpecificationService(
+		stateStore,
+		stateStore,
+		&specificationRecon{state: stateStore, events: &events, err: errors.New("recon failed")},
+		&specificationPrompt{events: &events, rendered: "prompt"},
+		runner,
+		&specificationDecoder{events: &events},
+		filepath.Join(t.TempDir(), "schema.json"),
+		time.Minute,
+	)
+
+	result, err := service.Create(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err == nil || !strings.Contains(err.Error(), "recon failed") {
+		t.Fatalf("error = %v, want recon failure", err)
+	}
+	if runner.called {
+		t.Fatal("specification agent ran after recon failure")
+	}
+	if result.Manifest.Substep != state.SubstepRecon {
+		t.Fatalf("result manifest = %#v", result.Manifest)
 	}
 }
 
@@ -107,7 +144,7 @@ func TestSpecificationResumeUsesPersistedSessionAndTypedBlockerPrompt(t *testing
 		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "existing-thread"}, nil
 	}}
 	service := workflow.NewSpecificationService(
-		stateStore, stateStore, &specificationPrompt{events: &events}, runner,
+		stateStore, stateStore, successfulSpecificationRecon(stateStore, &events), &specificationPrompt{events: &events}, runner,
 		&specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeCompleted, Summary: "done"}},
 		filepath.Join(t.TempDir(), "schema.json"), time.Minute, resumePrompt,
 	)
@@ -134,7 +171,7 @@ func TestSpecificationResumeRejectsASessionFromAnotherProviderBeforeLaunchingAge
 	stateStore := &specificationState{manifest: manifest, events: &events}
 	runner := &specificationAgent{events: &events, provider: agent.ProviderClaudeCode}
 	service := workflow.NewSpecificationService(
-		stateStore, stateStore, &specificationPrompt{events: &events}, runner,
+		stateStore, stateStore, successfulSpecificationRecon(stateStore, &events), &specificationPrompt{events: &events}, runner,
 		&specificationDecoder{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
 		&specificationPrompt{events: &events, rendered: "resume prompt"},
 	)
@@ -198,6 +235,7 @@ func TestSpecificationPhaseRejectsUnsafeOrMissingSpecificationPostconditions(t *
 			service := workflow.NewSpecificationService(
 				stateStore,
 				stateStore,
+				successfulSpecificationRecon(stateStore, &events),
 				&specificationPrompt{events: &events, rendered: "prompt"},
 				&specificationAgent{events: &events, result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`)}},
 				&specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeCompleted, Summary: "done"}},
@@ -236,6 +274,7 @@ func TestSpecificationPhasePersistsTechnicalFailuresWithSanitizedErrors(t *testi
 			service := workflow.NewSpecificationService(
 				stateStore,
 				stateStore,
+				successfulSpecificationRecon(stateStore, &events),
 				&specificationPrompt{events: &events, rendered: "prompt", err: test.promptErr},
 				&specificationAgent{events: &events, err: test.runnerErr},
 				&specificationDecoder{events: &events, err: test.decoderErr},
@@ -264,6 +303,7 @@ func TestSpecificationPhasePersistsControllerPathsAsRelativeErrors(t *testing.T)
 	service := workflow.NewSpecificationService(
 		stateStore,
 		stateStore,
+		successfulSpecificationRecon(stateStore, &events),
 		&specificationPrompt{events: &events, rendered: "prompt"},
 		&specificationAgent{events: &events, err: errors.New("cannot read " + absoluteSchemaPath)},
 		&specificationDecoder{events: &events},
@@ -297,6 +337,7 @@ func TestSpecificationPhaseAppliesConfiguredTimeout(t *testing.T) {
 	service := workflow.NewSpecificationService(
 		stateStore,
 		stateStore,
+		successfulSpecificationRecon(stateStore, &events),
 		&specificationPrompt{events: &events, rendered: "prompt"},
 		runner,
 		&specificationDecoder{events: &events},
@@ -324,6 +365,7 @@ func TestSpecificationPhaseHonorsCallerCancellation(t *testing.T) {
 	service := workflow.NewSpecificationService(
 		stateStore,
 		stateStore,
+		successfulSpecificationRecon(stateStore, &events),
 		&specificationPrompt{events: &events, rendered: "prompt"},
 		runner,
 		&specificationDecoder{events: &events},
@@ -354,6 +396,7 @@ func TestSpecificationPhaseDoesNotStartAgentWhenRunningTransitionFails(t *testin
 	service := workflow.NewSpecificationService(
 		stateStore,
 		stateStore,
+		successfulSpecificationRecon(stateStore, &events),
 		&specificationPrompt{events: &events, rendered: "prompt"},
 		runner,
 		&specificationDecoder{events: &events},
@@ -372,6 +415,30 @@ type specificationState struct {
 	manifest      state.Manifest
 	events        *[]string
 	transitionErr error
+}
+
+type specificationRecon struct {
+	state  *specificationState
+	events *[]string
+	recon  string
+	err    error
+}
+
+func successfulSpecificationRecon(stateStore *specificationState, events *[]string) *specificationRecon {
+	return &specificationRecon{
+		state: stateStore, events: events,
+		recon: "# Recon\n\n## Relevant code\n\n- internal/workflow/specification.go\n",
+	}
+}
+
+func (recon *specificationRecon) Recon(_ context.Context, _ string, _ string) (workflow.ReconnaissanceResult, error) {
+	*recon.events = append(*recon.events, "recon")
+	running := recon.state.manifest
+	running.Phase = state.PhaseSpec
+	running.Substep = state.SubstepRecon
+	running.Status = state.StatusRunning
+	recon.state.manifest = running
+	return workflow.ReconnaissanceResult{Manifest: running, Recon: recon.recon}, recon.err
 }
 
 func (store *specificationState) Read(_ string, _ string) (state.Manifest, error) {

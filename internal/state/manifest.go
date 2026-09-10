@@ -38,6 +38,14 @@ const (
 	PhaseDone           Phase = "done"
 )
 
+// Substep names durable work within a top-level workflow phase.
+type Substep string
+
+const (
+	SubstepRecon         Substep = "recon"
+	SubstepSpecification Substep = "specification"
+)
+
 // Status is the durable workflow execution condition.
 type Status string
 
@@ -123,6 +131,7 @@ type Manifest struct {
 	Issue             IssueSnapshot   `json:"issue"`
 	Actor             string          `json:"actor"`
 	Phase             Phase           `json:"phase"`
+	Substep           Substep         `json:"substep,omitempty"`
 	Status            Status          `json:"status"`
 	Branch            string          `json:"branch"`
 	BaseSHA           string          `json:"base_sha"`
@@ -225,6 +234,17 @@ func (manifest Manifest) Validate() error {
 	if manifest.SkipSpecification && manifest.Phase == PhaseSpec {
 		return errors.New("a skipped specification cannot enter the specification phase")
 	}
+	if manifest.Substep != "" {
+		if manifest.Phase != PhaseSpec {
+			return errors.New("workflow substep is only valid during the specification phase")
+		}
+		if manifest.Substep != SubstepRecon && manifest.Substep != SubstepSpecification {
+			return fmt.Errorf("invalid specification substep %q", manifest.Substep)
+		}
+		if manifest.Substep == SubstepRecon && manifest.SpecificationPath != "" {
+			return errors.New("recon substep cannot have a specification path")
+		}
+	}
 	if manifest.AgentSessions != nil {
 		if !manifest.AgentSessions.Provider.Valid() {
 			return errors.New("agent sessions provider is missing or unsupported")
@@ -237,6 +257,9 @@ func (manifest Manifest) Validate() error {
 		}
 		if manifest.AgentSessions.Specification != "" && (manifest.SkipSpecification || manifest.Phase == PhaseInit) {
 			return errors.New("specification agent session is invalid before the specification phase")
+		}
+		if manifest.AgentSessions.Specification != "" && manifest.Substep == SubstepRecon {
+			return errors.New("specification agent session is invalid during recon")
 		}
 		if manifest.AgentSessions.Implementation != "" && manifest.Phase != PhaseImplementation && manifest.Phase != PhaseReview && manifest.Phase != PhasePullRequest && manifest.Phase != PhaseDone {
 			return errors.New("implementation agent session is invalid before the implementation phase")

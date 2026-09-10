@@ -63,6 +63,11 @@ func allowedManifestTransition(current, next Manifest) bool {
 }
 
 func validateTransitionData(current, next Manifest) error {
+	if current.Phase == PhaseSpec && next.Phase == PhaseSpec && current.Substep != "" {
+		if next.Substep == "" || current.Substep == SubstepSpecification && next.Substep == SubstepRecon {
+			return errors.New("specification substep cannot move backward or be cleared within the spec phase")
+		}
+	}
 	if err := validateAgentSessionTransition(current, next); err != nil {
 		return err
 	}

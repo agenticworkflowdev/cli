@@ -10,7 +10,7 @@ the recorded branch, or close the source issue to force progress; those actions
 remove evidence AWDev uses for safe reconciliation.
 
 Inspect `.awdev/issues/<workflow-id>/manifest.json`, especially `phase`,
-`status`, `last_error`, `worktree`, `branch`, `base_sha`, `commit_tree_sha`,
+`substep`, `status`, `last_error`, `worktree`, `branch`, `base_sha`, `commit_tree_sha`,
 `commit_sha`, `blocker`, and `pull_request`. Diagnostic logs in `.awdev/logs/`
 may be copied elsewhere and removed after investigation; removing them does not
 change workflow state. Do not remove manifest or review files.
@@ -21,9 +21,11 @@ Use the recovery boundary for the recorded phase:
   GitHub authentication, issue validity, or the reported worktree collision and
   rerun `awdev run github N`. AWDev adopts only an exact validated bootstrap
   worktree; it never repairs a conflicting path or branch destructively.
-- For `spec/failed`, preserve the generated worktree and error log. Correct an
-  external agent-CLI, timeout, schema, or filesystem problem, then inspect the
-  partial spec if one exists. There is no automated retry for this phase.
+- For `spec/failed`, use `substep` to distinguish reconnaissance from
+  specification. Preserve the generated worktree, `recon.md` when present, and
+  error log. Correct an external agent-CLI, timeout, schema, or filesystem
+  problem, then inspect the partial artifact if one exists. There is no
+  automated retry for this phase.
 - For `implementation/failed`, inspect `last_error` and the private log for
   agent and check results. Fix the environment rather than bypassing a check.
   There is no automated retry after the bounded check-repair loop.

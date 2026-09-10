@@ -109,6 +109,10 @@ func newWorkflowRuntime(
 	render := func(name string) (*prompt.Renderer, error) {
 		return prompt.NewRenderer(name, installed.Prompts[name].Contents)
 	}
+	reconPrompt, err := render(assets.PromptRecon)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
 	specificationPrompt, err := render(assets.PromptSpec)
 	if err != nil {
 		return workflowRuntime{}, err
@@ -137,6 +141,10 @@ func newWorkflowRuntime(
 	if err != nil {
 		return workflowRuntime{}, err
 	}
+	reconDecoder, err := agent.NewReconResultDecoder(installed.Schemas[assets.SchemaReconResult].Contents)
+	if err != nil {
+		return workflowRuntime{}, err
+	}
 	reviewDecoder, err := review.NewResultDecoder(installed.Schemas[assets.SchemaReviewResult].Contents)
 	if err != nil {
 		return workflowRuntime{}, err
@@ -145,12 +153,18 @@ func newWorkflowRuntime(
 	if err != nil {
 		return workflowRuntime{}, err
 	}
+	reconRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Recon agent\n  └─ inspecting relevant code..."}
 	specificationRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Specification agent\n  └─ writing specification..."}
 	implementationRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Implementation agent\n  └─ implementing changes..."}
 	reviewRunner := &progressAgentRunner{runner: agentRunner, report: progress, interval: agentSpinnerInterval, startMessage: "● Review agent"}
 	transitionService := state.NewTransitionService(manifestStore)
+	reconService := workflow.NewReconnaissanceService(
+		manifestStore, transitionService, manifestStore, reconPrompt, reconRunner, reconDecoder,
+		installed.Schemas[assets.SchemaReconResult].Path, configuration.Agent.Timeout,
+	)
+	reportingRecon := &reportingReconnaissanceService{service: reconService, report: progress}
 	specificationService := workflow.NewSpecificationService(
-		manifestStore, transitionService, specificationPrompt, specificationRunner, resultDecoder,
+		manifestStore, transitionService, reportingRecon, specificationPrompt, specificationRunner, resultDecoder,
 		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, resumePrompt,
 	)
 	reportingSpecification := &reportingSpecificationService{service: specificationService, report: progress}
@@ -229,6 +243,19 @@ func (bootstrapper *reportingBootstrapper) Continue(ctx context.Context, request
 type reportingSpecificationService struct {
 	service *workflow.SpecificationService
 	report  cli.ProgressReporter
+}
+
+type reportingReconnaissanceService struct {
+	service *workflow.ReconnaissanceService
+	report  cli.ProgressReporter
+}
+
+func (service *reportingReconnaissanceService) Recon(ctx context.Context, controllerRoot, workflowID string) (workflow.ReconnaissanceResult, error) {
+	result, err := service.service.Recon(ctx, controllerRoot, workflowID)
+	if err == nil {
+		reportMessage(service.report, "\n✓ Recon complete")
+	}
+	return result, err
 }
 
 func (service *reportingSpecificationService) Create(ctx context.Context, controllerRoot, workflowID string) (workflow.SpecificationResult, error) {

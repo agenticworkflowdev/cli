@@ -143,6 +143,15 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 }
 
 func (store *Store) replaceJSON(directory, destination, pattern, label string, value any) error {
+	return store.replaceFile(directory, destination, pattern, label, func(writer io.Writer) error {
+		encoder := json.NewEncoder(writer)
+		encoder.SetEscapeHTML(false)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(value)
+	})
+}
+
+func (store *Store) replaceFile(directory, destination, pattern, label string, write func(io.Writer) error) error {
 	temporary, err := store.filesystem.CreateTemp(directory, pattern)
 	if err != nil {
 		return fmt.Errorf("create temporary %s: %w", label, err)
@@ -161,10 +170,7 @@ func (store *Store) replaceJSON(directory, destination, pattern, label string, v
 		_ = store.filesystem.Remove(temporaryPath)
 	}()
 
-	encoder := json.NewEncoder(temporary)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
+	if err := write(temporary); err != nil {
 		return fmt.Errorf("encode temporary %s: %w", label, err)
 	}
 	if err := temporary.Sync(); err != nil {
@@ -221,6 +227,10 @@ func (store *Store) ensureStateDirectory(controllerRoot, workflowID string, crea
 }
 
 func (store *Store) validateRegularOrMissing(path string, missingAllowed bool) error {
+	return store.validateArtifactRegularOrMissing(path, missingAllowed, "manifest")
+}
+
+func (store *Store) validateArtifactRegularOrMissing(path string, missingAllowed bool, label string) error {
 	info, err := store.filesystem.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) && missingAllowed {
 		return nil
@@ -229,7 +239,7 @@ func (store *Store) validateRegularOrMissing(path string, missingAllowed bool) e
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return errors.New("manifest path must be a regular file, not a symlink")
+		return fmt.Errorf("%s path must be a regular file, not a symlink", label)
 	}
 	return nil
 }

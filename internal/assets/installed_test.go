@@ -55,6 +55,20 @@ func TestDefaultAgentResultSchemaUsesCodexSupportedRootObject(t *testing.T) {
 	}
 }
 
+func TestDefaultReconResultSchemaProducesValidatedMarkdown(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "schemas/recon-result.schema.json")
+	if err != nil {
+		t.Fatalf("read default recon result schema: %v", err)
+	}
+	decoder, err := agent.NewReconResultDecoder(contents)
+	if err != nil {
+		t.Fatalf("compile default recon result schema: %v", err)
+	}
+	if _, err := decoder.Decode([]byte(`{"recon":"# Recon\n\n## Issue\n\nAdd recon.\n"}`)); err != nil {
+		t.Fatalf("decode default recon result: %v", err)
+	}
+}
+
 func TestDefaultReviewResultSchemaRequiresEveryFindingPropertyForCodex(t *testing.T) {
 	contents, err := fs.ReadFile(assets.Defaults(), "schemas/review-result.schema.json")
 	if err != nil {
@@ -105,14 +119,18 @@ func TestLoadInstalledUsesControllerRootAndRepositoryOwnedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load installed assets: %v", err)
 	}
-	if len(installed.Prompts) != 6 {
-		t.Fatalf("prompt count = %d, want 6", len(installed.Prompts))
+	if len(installed.Prompts) != 7 {
+		t.Fatalf("prompt count = %d, want 7", len(installed.Prompts))
 	}
-	if len(installed.Schemas) != 2 {
-		t.Fatalf("schema count = %d, want 2", len(installed.Schemas))
+	if len(installed.Schemas) != 3 {
+		t.Fatalf("schema count = %d, want 3", len(installed.Schemas))
 	}
 	if got := installed.Prompts[assets.PromptSpec]; string(got.Contents) != string(wantPrompt) || got.Path != promptPath {
 		t.Fatalf("spec prompt = %#v, want path %q and repository bytes %q", got, promptPath, wantPrompt)
+	}
+	wantReconPromptPath := filepath.Join(root, ".awdev", "prompts", "recon.md")
+	if got := installed.Prompts[assets.PromptRecon]; got.Path != wantReconPromptPath || len(got.Contents) == 0 {
+		t.Fatalf("recon prompt = %#v, want non-empty file at %q", got, wantReconPromptPath)
 	}
 	wantSchemaPath := filepath.Join(root, ".awdev", "schemas", "agent-result.schema.json")
 	if got := installed.Schemas[assets.SchemaAgentResult]; got.Path != wantSchemaPath || len(got.Contents) == 0 {

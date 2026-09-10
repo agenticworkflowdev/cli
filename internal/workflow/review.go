@@ -192,7 +192,7 @@ func (service *ReviewService) Review(ctx context.Context, controllerRoot, workfl
 		return ReviewResult{}, fmt.Errorf("persist review/running transition: %w", err)
 	}
 
-	baseData := promptData(running, running.SpecificationPath)
+	baseData := promptData(running, running.SpecificationPath, "")
 	result := ReviewResult{Manifest: running, CheckResults: cloneCheckResults(checkResults)}
 	return service.reviewLoop(ctx, controllerRoot, outputDirectory, absoluteWorktree, baseData, result, checkedState)
 }
@@ -316,7 +316,7 @@ func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workfl
 	if err := service.evidence.InvalidateReview(controllerRoot, workflowID); err != nil {
 		return service.fail(controllerRoot, current, result, fmt.Errorf("invalidate review evidence before human-directed correction: %w", err))
 	}
-	baseData := promptData(current, current.SpecificationPath)
+	baseData := promptData(current, current.SpecificationPath, "")
 	resumeSessionID, err := resumableAgentSession(current, implementationSessionRole, service.runner)
 	if err != nil {
 		return service.fail(controllerRoot, current, result, err)

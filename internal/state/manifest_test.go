@@ -214,6 +214,11 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 		{name: "worktree shape", edit: func(value *state.Manifest) { value.Worktree = ".awdev/outside/gh-17-title" }, want: "worktree"},
 		{name: "worktree and branch mismatch", edit: func(value *state.Manifest) { value.Branch = "gh-17-other-title" }, want: "must match"},
 		{name: "spec path", edit: func(value *state.Manifest) { value.SpecificationPath = "../escape.md" }, want: "specification"},
+		{name: "recon with spec path", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.Substep = state.SubstepRecon
+			value.SpecificationPath = ".awdev/specs/" + value.Branch + ".md"
+		}, want: "recon substep"},
 		{name: "base sha", edit: func(value *state.Manifest) { value.BaseSHA = "abc" }, want: "base SHA"},
 		{name: "phase", edit: func(value *state.Manifest) { value.Phase = "unknown" }, want: "phase"},
 		{name: "status", edit: func(value *state.Manifest) { value.Status = "unknown" }, want: "status"},
@@ -233,6 +238,11 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 		{name: "spec session before spec", edit: func(value *state.Manifest) {
 			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
 		}, want: "specification agent session"},
+		{name: "spec session during recon", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.Substep = state.SubstepRecon
+			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
+		}, want: "during recon"},
 		{name: "implementation session before implementation", edit: func(value *state.Manifest) {
 			value.Phase = state.PhaseSpec
 			value.AgentSessions = &state.AgentSessions{Provider: "codex", Implementation: "implementation-session"}
@@ -299,6 +309,36 @@ func TestManifestValidationAcceptsEverySupportedPhaseStatusCombination(t *testin
 			}
 			if err := manifest.Validate(); err != nil {
 				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestManifestValidationScopesReconSubstepToSpecPhase(t *testing.T) {
+	root := t.TempDir()
+
+	recon := validManifest(root)
+	recon.Phase = state.PhaseSpec
+	recon.Substep = state.SubstepRecon
+	if err := recon.Validate(); err != nil {
+		t.Fatalf("spec/recon manifest was rejected: %v", err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		phase   state.Phase
+		substep state.Substep
+	}{
+		{name: "recon outside spec", phase: state.PhaseImplementation, substep: state.SubstepRecon},
+		{name: "specification outside spec", phase: state.PhaseImplementation, substep: state.SubstepSpecification},
+		{name: "unknown spec substep", phase: state.PhaseSpec, substep: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := validManifest(root)
+			manifest.Phase = test.phase
+			manifest.Substep = test.substep
+			if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "substep") {
+				t.Fatalf("Validate() error = %v, want substep error", err)
 			}
 		})
 	}
