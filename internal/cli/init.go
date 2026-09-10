@@ -11,13 +11,12 @@ import (
 )
 
 func newInitCommand(services Services) *cobra.Command {
-	var withSkill bool
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Select an agent and initialize the current repository",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			provider, err := selectAgent(command)
+			provider, withSkill, err := selectInitOptions(command)
 			if err != nil {
 				return err
 			}
@@ -45,7 +44,6 @@ func newInitCommand(services Services) *cobra.Command {
 			return writeInitializationResult(command, result, provider)
 		},
 	}
-	command.Flags().BoolVar(&withSkill, "with-skill", false, "install the explicit-only repository agent skill")
 	return command
 }
 
