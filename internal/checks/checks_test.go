@@ -59,7 +59,7 @@ func TestExecutorRunsEveryCheckInDeclaredOrderWithSanitizedEnvironment(t *testin
 		if request.Directory != wantDirectory || !reflect.DeepEqual(request.Argv, definitions[index].Command) {
 			t.Errorf("request %d = %#v", index, request)
 		}
-		if !request.CleanEnvironment || request.StdoutLimit <= 0 || request.StderrLimit <= 0 {
+		if !request.CleanEnvironment || request.StdoutLimit <= 0 || request.StderrLimit <= 0 || !request.PreserveOutputTail {
 			t.Errorf("request %d did not use a bounded clean environment: %#v", index, request)
 		}
 		if request.Environment["PATH"] != "/test/bin" || request.Environment["HOME"] != "/test/home" || request.Environment["AWDEV_WORKER"] != "1" {

@@ -35,6 +35,8 @@ type Result struct {
 	TimedOut        bool
 	StdoutTruncated bool
 	StderrTruncated bool
+	StdoutOmitted   bool
+	StderrOmitted   bool
 }
 
 // DiagnosticDetails formats one bounded check result for a private local
@@ -93,12 +95,13 @@ func (executor *Executor) Run(ctx context.Context, worktree string, definitions 
 		}
 		checkContext, cancel := context.WithTimeout(ctx, definition.Timeout)
 		processResult, err := executor.process.Run(checkContext, processrun.Request{
-			Directory:        checkDirectory,
-			Argv:             append([]string(nil), definition.Command...),
-			Environment:      sanitizedEnvironment(),
-			CleanEnvironment: true,
-			StdoutLimit:      outputLimit,
-			StderrLimit:      outputLimit,
+			Directory:          checkDirectory,
+			Argv:               append([]string(nil), definition.Command...),
+			Environment:        sanitizedEnvironment(),
+			CleanEnvironment:   true,
+			StdoutLimit:        outputLimit,
+			StderrLimit:        outputLimit,
+			PreserveOutputTail: true,
 		})
 		contextErr := checkContext.Err()
 		cancel()

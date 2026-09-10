@@ -118,6 +118,30 @@ func TestRunnerInvokesClaudeCodeThroughTheVerifiedContract(t *testing.T) {
 	}
 }
 
+func TestRunnerResumesAnExistingClaudeCodeSession(t *testing.T) {
+	const sessionID = "11111111-1111-4111-8111-111111111111"
+	stream := `{"type":"system","subtype":"init","session_id":"` + sessionID + `"}` + "\n" +
+		`{"type":"result","session_id":"` + sessionID + `","is_error":false,"structured_output":{"status":"completed","summary":"done"}}` + "\n"
+	process := &fakeProcessRunner{stdout: []byte(stream)}
+	runner := mustRunner(t, process)
+	request := validRequest(t, agent.AccessWorkspaceWrite)
+	request.ResumeSessionID = sessionID
+
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got := argvValue(process.request.Argv, "--resume"); got != sessionID {
+		t.Fatalf("--resume = %q, want %q; argv=%#v", got, sessionID, process.request.Argv)
+	}
+	if got := argvValue(process.request.Argv, "--session-id"); got != "" {
+		t.Fatalf("resumed run created a new session %q; argv=%#v", got, process.request.Argv)
+	}
+	if result.SessionID != sessionID {
+		t.Fatalf("session id = %q, want %q", result.SessionID, sessionID)
+	}
+}
+
 func TestRunnerSelectsPlanModeForReadOnlyAccessAndOmitsTheModelFlag(t *testing.T) {
 	worktree := t.TempDir()
 	schemaPath := filepath.Join(t.TempDir(), "schema.json")
@@ -287,6 +311,11 @@ func TestRunnerRejectsRunsThatDoNotProduceAContractResult(t *testing.T) {
 			name:   "missing session identity",
 			stdout: `{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}` + "\n",
 			want:   "session identity is missing",
+		},
+		{
+			name:   "option-like session identity",
+			stdout: `{"type":"system","subtype":"init","session_id":"--resume"}` + "\n" + `{"type":"result","session_id":"--resume","is_error":false,"structured_output":{"status":"completed","summary":"done"}}` + "\n",
+			want:   "malformed session identity",
 		},
 		{
 			name:   "malformed stream event",

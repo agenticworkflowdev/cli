@@ -585,10 +585,13 @@ func assertSafeExternalInvocations(t *testing.T, events []traceEvent, agentTool 
 			}
 		case "codex":
 			starts[event.Tool]++
-			for _, required := range []string{"exec", "--json", "--sandbox", "--output-schema", "--cd", "--output-last-message"} {
+			for _, required := range []string{"exec", "--json", "--output-schema", "--output-last-message"} {
 				if !strings.Contains(joined, required) {
 					t.Errorf("codex argv %q lacks %q", joined, required)
 				}
+			}
+			if !strings.Contains(joined, "--sandbox") || !strings.Contains(joined, "--cd") {
+				t.Errorf("codex invocation lacks sandbox or worktree binding: %q", joined)
 			}
 			if event.Worker != "1" || event.Args[len(event.Args)-1] != "-" {
 				t.Errorf("codex invocation is not a guarded stdin invocation: %#v", event)
@@ -598,10 +601,13 @@ func assertSafeExternalInvocations(t *testing.T, events []traceEvent, agentTool 
 			}
 		case "claude":
 			starts[event.Tool]++
-			for _, required := range []string{"--print", "--output-format stream-json", "--verbose", "--json-schema", "--permission-mode", "--permission-prompts none", "--session-id", "--add-dir"} {
+			for _, required := range []string{"--print", "--output-format stream-json", "--verbose", "--json-schema", "--permission-mode", "--permission-prompts none", "--add-dir"} {
 				if !strings.Contains(joined, required) {
 					t.Errorf("claude argv %q lacks %q", joined, required)
 				}
+			}
+			if !strings.Contains(joined, "--session-id") && !strings.Contains(joined, "--resume") {
+				t.Errorf("claude argv %q creates neither a new nor resumed session", joined)
 			}
 			if event.Worker != "1" {
 				t.Errorf("claude invocation missing AWDEV_WORKER guard: %#v", event)

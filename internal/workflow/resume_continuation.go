@@ -22,7 +22,7 @@ type reviewContinuation interface {
 }
 
 // ResumeContinuationService resumes one phase and then follows the normal
-// downstream gates without reusing an earlier agent session.
+// downstream gates, resuming the phase's persisted agent session when present.
 type ResumeContinuationService struct {
 	specification  specificationResumer
 	implementation implementationContinuation

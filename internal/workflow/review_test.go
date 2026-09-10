@@ -20,6 +20,7 @@ import (
 
 func TestReviewImmediatelyApprovesTheCheckedDiff(t *testing.T) {
 	fixture := newReviewFixture(t, 3)
+	fixture.passing[0].Stdout = "verbose passing output"
 	fixture.reviewDecoder.results = []review.Result{{Approved: true, Findings: []review.Finding{}}}
 
 	result, err := fixture.service.Review(context.Background(), fixture.root, fixture.state.manifest.WorkflowID, fixture.passing, gitrepo.WorktreeBaseline{})
@@ -44,8 +45,22 @@ func TestReviewImmediatelyApprovesTheCheckedDiff(t *testing.T) {
 		t.Fatalf("review request = %#v", request)
 	}
 	data := fixture.reviewPrompt.datas[0]
-	if data.BaseSHA != fixture.state.manifest.BaseSHA || data.SpecificationPath != fixture.state.manifest.SpecificationPath || !reflect.DeepEqual(data.CheckResults, fixture.passing) {
+	if data.BaseSHA != fixture.state.manifest.BaseSHA || data.SpecificationPath != fixture.state.manifest.SpecificationPath || len(data.CheckResults) != 1 || data.CheckResults[0].Stdout != "[omitted by controller: check passed]" || !data.CheckResults[0].StdoutOmitted {
 		t.Fatalf("review prompt data = %#v", data)
+	}
+	legacyRenderer, err := prompt.NewRenderer("legacy-review", []byte(`{{range .CheckResults}}Stdout: {{printf "%q" .Stdout}}{{end}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPrompt, err := legacyRenderer.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(legacyPrompt, "omitted by controller: check passed") || strings.Contains(legacyPrompt, "verbose passing output") {
+		t.Fatalf("legacy installed prompt received ambiguous evidence: %q", legacyPrompt)
+	}
+	if !reflect.DeepEqual(result.CheckResults, fixture.passing) {
+		t.Fatalf("authoritative check evidence was mutated: %#v", result.CheckResults)
 	}
 }
 
@@ -138,6 +153,9 @@ func TestReviewCorrectsFindingsRunsAllChecksAndStartsAFreshReview(t *testing.T) 
 	if got := []agent.AccessLevel{fixture.runner.requests[0].Access, fixture.runner.requests[1].Access, fixture.runner.requests[2].Access}; !reflect.DeepEqual(got, []agent.AccessLevel{agent.AccessReadOnly, agent.AccessWorkspaceWrite, agent.AccessReadOnly}) {
 		t.Fatalf("agent access sequence = %v", got)
 	}
+	if fixture.runner.requests[0].ResumeSessionID != "" || fixture.runner.requests[1].ResumeSessionID != "implementation-session" || fixture.runner.requests[2].ResumeSessionID != "" {
+		t.Fatalf("review/correction session boundaries = %#v", fixture.runner.requests)
+	}
 	if len(fixture.evidence.results) != 2 || fixture.evidence.results[0].Approved || !fixture.evidence.results[1].Approved {
 		t.Fatalf("persisted evidence = %#v", fixture.evidence.results)
 	}
@@ -178,11 +196,14 @@ func TestReviewResumeAppliesHumanDirectionRunsChecksAndStartsFreshReview(t *test
 	if err != nil {
 		t.Fatalf("resume review: %v", err)
 	}
-	if result.Evidence == nil || !result.Evidence.Approved || !reflect.DeepEqual(result.SessionIDs, []string{"session-1", "session-2"}) {
+	if result.Evidence == nil || !result.Evidence.Approved || !reflect.DeepEqual(result.SessionIDs, []string{"implementation-session", "session-2"}) {
 		t.Fatalf("result = %#v", result)
 	}
 	if got := []agent.AccessLevel{fixture.runner.requests[0].Access, fixture.runner.requests[1].Access}; !reflect.DeepEqual(got, []agent.AccessLevel{agent.AccessWorkspaceWrite, agent.AccessReadOnly}) {
 		t.Fatalf("agent access sequence = %v", got)
+	}
+	if fixture.runner.requests[0].ResumeSessionID != "implementation-session" || fixture.runner.requests[1].ResumeSessionID != "" {
+		t.Fatalf("resume/review session boundaries = %#v", fixture.runner.requests)
 	}
 	if len(fixture.resumePrompt.datas) != 1 || fixture.resumePrompt.datas[0].Blocker == nil || fixture.resumePrompt.datas[0].Blocker.Answer != "Use option A" {
 		t.Fatalf("resume prompt data = %#v", fixture.resumePrompt.datas)
@@ -333,6 +354,7 @@ func newReviewFixture(t *testing.T, maxAttempts int) *reviewFixture {
 	t.Helper()
 	manifest, root := implementationManifest(t)
 	manifest.Phase = state.PhaseImplementation
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Implementation: "implementation-session"}
 	passing := []checks.Result{{Name: "tests", Command: []string{"go", "test", "./..."}, ExitCode: 0, Duration: time.Second}}
 	definitions := []checks.Definition{{Name: "tests", Command: []string{"go", "test", "./..."}, Timeout: time.Minute}}
 	fixture := &reviewFixture{root: root, passing: passing, definitions: definitions}
@@ -391,10 +413,16 @@ type reviewAgentFake struct {
 	requests []agent.Request
 }
 
+func (*reviewAgentFake) Provider() agent.Provider { return agent.ProviderCodex }
+
 func (fake *reviewAgentFake) Run(_ context.Context, request agent.Request) (agent.RunResult, error) {
 	*fake.events = append(*fake.events, "agent:"+string(request.Access))
 	fake.requests = append(fake.requests, request)
-	return agent.RunResult{FinalOutput: []byte("result"), SessionID: "session-" + string(rune('0'+len(fake.requests)))}, nil
+	sessionID := request.ResumeSessionID
+	if sessionID == "" {
+		sessionID = "session-" + string(rune('0'+len(fake.requests)))
+	}
+	return agent.RunResult{FinalOutput: []byte("result"), SessionID: sessionID}, nil
 }
 
 type reviewDecoderFake struct {

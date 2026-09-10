@@ -158,7 +158,7 @@ func newWorkflowRuntime(
 		manifestStore, transitionService, implementationPrompt, fixChecksPrompt, implementationRunner, resultDecoder,
 		checks.NewExecutor(processRunner), gitrepo.NewDiffInspector("git", processRunner), gitrepo.NewWorktreeInspector("git", processRunner),
 		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, configuration.Checks, configuration.ProtectedPaths, resumePrompt,
-	)
+	).WithMaxCheckRepairs(configuration.Implementation.MaxCheckRepairs)
 	reportingImplementation := &reportingImplementationService{service: implementationService, report: progress}
 	reviewService := workflow.NewReviewService(
 		manifestStore, transitionService, reviewPrompt, fixReviewPrompt, reviewRunner, reviewDecoder, resultDecoder,
@@ -295,6 +295,17 @@ type progressAgentRunner struct {
 	interval     time.Duration
 	startMessage string
 	startOnce    sync.Once
+}
+
+func (runner *progressAgentRunner) Provider() agent.Provider {
+	if runner == nil || runner.runner == nil {
+		return ""
+	}
+	providerRunner, ok := runner.runner.(agent.ProviderRunner)
+	if !ok {
+		return ""
+	}
+	return providerRunner.Provider()
 }
 
 func (runner *progressAgentRunner) Run(ctx context.Context, request agent.Request) (agent.RunResult, error) {

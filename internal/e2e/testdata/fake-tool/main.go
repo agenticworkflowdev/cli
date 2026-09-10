@@ -183,7 +183,17 @@ func runCodex(root string, args []string, input []byte) toolResult {
 		fatal(fmt.Errorf("unexpected codex argv: %q", args))
 	}
 	output := valueAfter(args, "--output-last-message")
-	access := valueAfter(args, "--sandbox")
+	access := ""
+	if hasArg(args, "--sandbox") {
+		access = valueAfter(args, "--sandbox")
+	}
+	sessionID := ""
+	if resumeIndex := indexOf(args, "resume"); resumeIndex >= 0 {
+		if resumeIndex+1 >= len(args)-1 {
+			fatal(fmt.Errorf("resume session identity is missing: %q", args))
+		}
+		sessionID = args[resumeIndex+1]
+	}
 	prompt := string(input)
 	settings := readScenario(root)
 	if settings.Mode == scenarioCancellation {
@@ -244,7 +254,10 @@ func runCodex(root string, args []string, input []byte) toolResult {
 	if err := os.WriteFile(output, []byte(result), 0o600); err != nil {
 		fatal(err)
 	}
-	return toolResult{stdout: fmt.Sprintf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", "fake-"+strconv.FormatInt(time.Now().UnixNano(), 10))}
+	if sessionID == "" {
+		sessionID = "fake-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return toolResult{stdout: fmt.Sprintf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", sessionID)}
 }
 
 // runClaude imitates the Claude Code CLI as the claudecode adapter drives it:
@@ -266,7 +279,15 @@ func runClaude(root string, args []string, input []byte) toolResult {
 	if strings.TrimSpace(valueAfter(args, "--json-schema")) == "" {
 		fatal(fmt.Errorf("claude --json-schema is empty: %q", args))
 	}
-	sessionID := valueAfter(args, "--session-id")
+	sessionID := ""
+	if hasArg(args, "--session-id") {
+		sessionID = valueAfter(args, "--session-id")
+	} else if hasArg(args, "--resume") {
+		sessionID = valueAfter(args, "--resume")
+	}
+	if sessionID == "" {
+		fatal(fmt.Errorf("missing --session-id or --resume in argv %q", args))
+	}
 	worktree := valueAfter(args, "--add-dir")
 	if args[len(args)-1] != worktree {
 		fatal(fmt.Errorf("claude prompt must arrive on stdin, not argv: %q", args))
@@ -407,6 +428,15 @@ func hasArg(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+func indexOf(args []string, value string) int {
+	for index, argument := range args {
+		if argument == value {
+			return index
+		}
+	}
+	return -1
 }
 
 func runCheck() toolResult {

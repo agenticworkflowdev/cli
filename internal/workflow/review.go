@@ -206,7 +206,7 @@ func (service *ReviewService) reviewLoop(ctx context.Context, controllerRoot, ou
 			return service.fail(controllerRoot, result.Manifest, result, fmt.Errorf("worktree changed after deterministic checks: %s", strings.Join(changed, ", ")))
 		}
 		reviewData := baseData
-		reviewData.CheckResults = cloneCheckResults(result.CheckResults)
+		reviewData.CheckResults = checkResultsForReview(result.CheckResults)
 		evidence, runResult, err := service.runReadOnlyReview(ctx, absoluteWorktree, outputDirectory, reviewData, checkedState)
 		result.observe(runResult)
 		if err != nil {
@@ -240,11 +240,20 @@ func (service *ReviewService) reviewLoop(ctx context.Context, controllerRoot, ou
 		result.Manifest = correcting
 		correctionData := baseData
 		correctionData.ReviewFindings = cloneFindings(evidence.Findings)
-		outcome, correctionRun, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, outputDirectory, service.correctionPrompt, correctionData)
+		resumeSessionID, resumeErr := resumableAgentSession(result.Manifest, implementationSessionRole, service.runner)
+		if resumeErr != nil {
+			return service.fail(controllerRoot, result.Manifest, result, resumeErr)
+		}
+		outcome, correctionRun, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, outputDirectory, service.correctionPrompt, correctionData, resumeSessionID)
 		result.observe(correctionRun)
 		if err != nil {
 			return service.fail(controllerRoot, result.Manifest, result, fmt.Errorf("run review correction agent: %w", err))
 		}
+		correcting, err = persistAgentSession(service.transition, controllerRoot, correcting, implementationSessionRole, correctionRun.SessionID, service.runner)
+		if err != nil {
+			return service.fail(controllerRoot, result.Manifest, result, err)
+		}
+		result.Manifest = correcting
 		if outcome.Status == agent.OutcomeBlocked {
 			result.Blocker = &BlockerRequest{Phase: state.PhaseImplementation, Question: outcome.Question}
 			return result, nil
@@ -278,9 +287,9 @@ func (service *ReviewService) reviewLoop(ctx context.Context, controllerRoot, ou
 	}
 }
 
-// Resume applies the persisted human direction through a fresh workspace-write
-// correction, reruns deterministic checks, and starts a fresh independent
-// review without resetting the bounded review attempt counter.
+// Resume applies the persisted human direction through the implementation
+// session, reruns deterministic checks, and starts a fresh independent review
+// without resetting the bounded review attempt counter.
 func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workflowID string) (ReviewResult, error) {
 	if err := service.validate(); err != nil {
 		return ReviewResult{}, err
@@ -308,11 +317,20 @@ func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workfl
 		return service.fail(controllerRoot, current, result, fmt.Errorf("invalidate review evidence before human-directed correction: %w", err))
 	}
 	baseData := promptData(current, current.SpecificationPath)
-	outcome, runResult, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.resumePrompt, baseData)
+	resumeSessionID, err := resumableAgentSession(current, implementationSessionRole, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, current, result, err)
+	}
+	outcome, runResult, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.resumePrompt, baseData, resumeSessionID)
 	result.observe(runResult)
 	if err != nil {
 		return service.fail(controllerRoot, current, result, fmt.Errorf("run human-directed review correction: %w", err))
 	}
+	current, err = persistAgentSession(service.transition, controllerRoot, current, implementationSessionRole, runResult.SessionID, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, current, result, err)
+	}
+	result.Manifest = current
 	if outcome.Status == agent.OutcomeBlocked {
 		result.Blocker = &BlockerRequest{Phase: state.PhaseReview, Question: outcome.Question}
 		return result, nil
@@ -398,7 +416,7 @@ func (service *ReviewService) runReadOnlyReview(ctx context.Context, worktree, o
 	return evidence, runResult, nil
 }
 
-func (service *ReviewService) runCorrection(ctx context.Context, controllerRoot, worktree, outputDirectory string, renderer SpecificationPromptRenderer, data prompt.PromptData) (agent.Outcome, agent.RunResult, error) {
+func (service *ReviewService) runCorrection(ctx context.Context, controllerRoot, worktree, outputDirectory string, renderer SpecificationPromptRenderer, data prompt.PromptData, resumeSessionID string) (agent.Outcome, agent.RunResult, error) {
 	promptText, err := renderer.Render(data)
 	if err != nil {
 		return agent.Outcome{}, agent.RunResult{}, fmt.Errorf("render correction prompt: %w", err)
@@ -411,7 +429,7 @@ func (service *ReviewService) runCorrection(ctx context.Context, controllerRoot,
 	runContext, cancel := context.WithTimeout(ctx, service.timeout)
 	runResult, runErr := service.runner.Run(runContext, agent.Request{
 		Worktree: worktree, Prompt: promptText, OutputSchema: service.agentSchemaPath,
-		OutputDirectory: outputDirectory, Access: agent.AccessWorkspaceWrite,
+		OutputDirectory: outputDirectory, Access: agent.AccessWorkspaceWrite, ResumeSessionID: resumeSessionID,
 	})
 	cancel()
 	offending, inspectErr := service.diff.Inspect(ctx, scope, baseline)

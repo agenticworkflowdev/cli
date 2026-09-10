@@ -67,7 +67,9 @@ If an agent needs a decision, AWDev posts one marked issue comment and stops in
 awdev resume github 123
 ```
 
-`resume` always starts a fresh agent process for the recorded phase. If final
+`resume` starts a fresh process but continues the persisted provider session
+for the recorded specification or implementation role. Independent reviews
+always use a fresh session. If final
 pull-request publication failed after review, correct the external cause and
 use the deliberately narrow retry command:
 
@@ -95,6 +97,9 @@ foreground command exits.
 - `checks`: ordered checks, each with a name, optional repository-relative
   directory, argument-array command, and positive timeout. The shipped check
   timeout is `10m`.
+- `implementation.max_check_repairs`: automatic implementation repair turns
+  after failed deterministic checks, from 1 through 10; the shipped default is
+  3.
 - `review.max_attempts`: independent review attempts, from 1 through 10; the
   shipped default is 3.
 - `protected_paths`: additional repository-relative prefixes an agent may not
@@ -102,8 +107,10 @@ foreground command exits.
   of this list.
 
 Checks run in the generated worktree with credential variables removed. A
-failed implementation check can receive up to three automatic repair attempts;
-the configured review cap controls review/correction attempts.
+failed implementation check receives up to the configured number of automatic
+repair attempts. Review receives check metadata without verbose passing output,
+and failed output sent to repair is tail-bounded. The configured review cap
+controls review/correction attempts.
 
 ## Prompt templates
 
@@ -123,7 +130,9 @@ manually when upgrading. Configure meaningful project checks in
 
 Controller state remains in the original checkout:
 
-- `.awdev/issues/<workflow-id>/manifest.json` is the durable workflow record.
+- `.awdev/issues/<workflow-id>/manifest.json` is the durable workflow record,
+  including provider session identities used to continue specification and
+  implementation work across repair and blocker/resume boundaries.
 - `.awdev/issues/<workflow-id>/review.json` is current review evidence when
   present.
 - `.awdev/logs/` contains private diagnostic logs for command failures.

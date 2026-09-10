@@ -40,8 +40,8 @@ type ResumeResult struct {
 	Publication    *PublicationResult
 }
 
-// ResumePhaseContinuation starts a fresh typed agent run for the phase that
-// originally blocked.
+// ResumePhaseContinuation continues the typed agent role for the phase that
+// originally blocked, resuming its provider session when one was persisted.
 type ResumePhaseContinuation interface {
 	ContinueResume(context.Context, string, string, state.Phase) (ResumeContinuation, error)
 }

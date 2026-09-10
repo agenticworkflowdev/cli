@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/agenticworkflowdev/cli/internal/agent"
 )
 
 // CurrentSchemaVersion is the manifest format written by this version.
@@ -60,6 +62,15 @@ type IssueSnapshot struct {
 type ReviewCounters struct {
 	Attempt     int `json:"attempt"`
 	MaxAttempts int `json:"max_attempts"`
+}
+
+// AgentSessions are durable provider identities for roles that may continue
+// across automatic repairs or a human blocker/resume boundary. Independent
+// review sessions are intentionally not retained.
+type AgentSessions struct {
+	Provider       agent.Provider `json:"provider"`
+	Specification  string         `json:"specification,omitempty"`
+	Implementation string         `json:"implementation,omitempty"`
 }
 
 // Blocker records a durable request for human judgment. A blocker may be
@@ -118,6 +129,7 @@ type Manifest struct {
 	Worktree          string          `json:"worktree"`
 	SkipSpecification bool            `json:"skip_specification,omitempty"`
 	SpecificationPath string          `json:"specification_path,omitempty"`
+	AgentSessions     *AgentSessions  `json:"agent_sessions,omitempty"`
 	Review            *ReviewCounters `json:"review,omitempty"`
 	BlockerSequence   int             `json:"blocker_sequence,omitempty"`
 	Blocker           *Blocker        `json:"blocker,omitempty"`
@@ -212,6 +224,23 @@ func (manifest Manifest) Validate() error {
 	}
 	if manifest.SkipSpecification && manifest.Phase == PhaseSpec {
 		return errors.New("a skipped specification cannot enter the specification phase")
+	}
+	if manifest.AgentSessions != nil {
+		if !manifest.AgentSessions.Provider.Valid() {
+			return errors.New("agent sessions provider is missing or unsupported")
+		}
+		if manifest.AgentSessions.Specification == "" && manifest.AgentSessions.Implementation == "" {
+			return errors.New("agent sessions must contain at least one session identity")
+		}
+		if manifest.AgentSessions.Specification != "" && !agent.ValidSessionID(manifest.AgentSessions.Specification) || manifest.AgentSessions.Implementation != "" && !agent.ValidSessionID(manifest.AgentSessions.Implementation) {
+			return errors.New("agent session identity is malformed")
+		}
+		if manifest.AgentSessions.Specification != "" && (manifest.SkipSpecification || manifest.Phase == PhaseInit) {
+			return errors.New("specification agent session is invalid before the specification phase")
+		}
+		if manifest.AgentSessions.Implementation != "" && manifest.Phase != PhaseImplementation && manifest.Phase != PhaseReview && manifest.Phase != PhasePullRequest && manifest.Phase != PhaseDone {
+			return errors.New("implementation agent session is invalid before the implementation phase")
+		}
 	}
 	if manifest.Review != nil {
 		if manifest.Review.MaxAttempts < 1 || manifest.Review.Attempt < 0 || manifest.Review.Attempt > manifest.Review.MaxAttempts {

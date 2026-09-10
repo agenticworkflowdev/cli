@@ -225,6 +225,26 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 			value.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
 		}, want: "pull request"},
 		{name: "review count", edit: func(value *state.Manifest) { value.Review = &state.ReviewCounters{Attempt: 4, MaxAttempts: 3} }, want: "review"},
+		{name: "empty agent sessions", edit: func(value *state.Manifest) { value.AgentSessions = &state.AgentSessions{} }, want: "agent sessions"},
+		{name: "unsupported agent session provider", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.AgentSessions = &state.AgentSessions{Provider: "other", Specification: "spec-session"}
+		}, want: "provider"},
+		{name: "spec session before spec", edit: func(value *state.Manifest) {
+			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
+		}, want: "specification agent session"},
+		{name: "implementation session before implementation", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.AgentSessions = &state.AgentSessions{Provider: "codex", Implementation: "implementation-session"}
+		}, want: "implementation agent session"},
+		{name: "malformed agent session", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "session\nother"}
+		}, want: "agent session"},
+		{name: "option-like agent session", edit: func(value *state.Manifest) {
+			value.Phase = state.PhaseSpec
+			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "--last"}
+		}, want: "agent session"},
 	}
 
 	for _, test := range tests {

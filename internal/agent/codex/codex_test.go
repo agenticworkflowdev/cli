@@ -105,6 +105,32 @@ printf '%s\n' \
 	}
 }
 
+func TestRunnerResumesAnExistingCodexSession(t *testing.T) {
+	process := &fakeProcessRunner{
+		stdout:      []byte("{\"type\":\"thread.started\",\"thread_id\":\"thread-existing\"}\n{\"type\":\"turn.completed\"}\n"),
+		finalOutput: []byte(readFixture(t, "completed.json")),
+	}
+	runner := mustRunner(t, process)
+	request := validRequest(t, agent.AccessReadOnly)
+	request.ResumeSessionID = "thread-existing"
+
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	want := []string{
+		"codex", "exec", "--json", "--sandbox", "read-only", "--cd", request.Worktree,
+		"--output-schema", request.OutputSchema, "--output-last-message", argumentAfter(process.request.Argv, "--output-last-message"),
+		"resume", "thread-existing", "-",
+	}
+	if !reflect.DeepEqual(process.request.Argv, want) {
+		t.Fatalf("argv = %#v, want %#v", process.request.Argv, want)
+	}
+	if result.SessionID != request.ResumeSessionID {
+		t.Fatalf("session id = %q, want %q", result.SessionID, request.ResumeSessionID)
+	}
+}
+
 func TestRunnerParsesLargeAndUnknownJSONLEventsWithoutAScannerLimit(t *testing.T) {
 	large := strings.Repeat("x", 256*1024)
 	progressFixture := strings.Replace(readFixture(t, "oversized-unknown.jsonl"), "__LARGE_PAYLOAD__", large, 1)
@@ -169,6 +195,7 @@ func TestRunnerRejectsMalformedProgressAndMissingFinalOutput(t *testing.T) {
 		{name: "missing session identity", stdout: readFixture(t, "missing-session.jsonl"), finalOutput: []byte(readFixture(t, "completed.json")), want: "session"},
 		{name: "missing final output", stdout: readFixture(t, "successful.jsonl"), want: "final output"},
 		{name: "conflicting session IDs", stdout: readFixture(t, "conflicting-sessions.jsonl"), finalOutput: []byte(readFixture(t, "completed.json")), want: "session"},
+		{name: "option-like session ID", stdout: "{\"type\":\"thread.started\",\"thread_id\":\"--last\"}\n", finalOutput: []byte(readFixture(t, "completed.json")), want: "malformed session"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

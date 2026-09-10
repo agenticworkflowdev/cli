@@ -105,8 +105,9 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 	return service.run(ctx, controllerRoot, running, service.prompt)
 }
 
-// Resume continues specification in a fresh agent run using the persisted
-// blocker question and selected human answer.
+// Resume continues specification in its prior provider session using the
+// persisted blocker question and selected human answer. Legacy manifests
+// without a session identity start a fresh session.
 func (service *SpecificationService) Resume(ctx context.Context, controllerRoot, workflowID string) (SpecificationResult, error) {
 	if err := service.validate(); err != nil {
 		return SpecificationResult{}, err
@@ -154,6 +155,10 @@ func (service *SpecificationService) run(ctx context.Context, controllerRoot str
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("derive agent output directory: %w", err))
 	}
+	resumeSessionID, err := resumableAgentSession(running, specificationSessionRole, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, running, err)
+	}
 
 	runContext, cancel := context.WithTimeout(ctx, service.timeout)
 	defer cancel()
@@ -163,6 +168,7 @@ func (service *SpecificationService) run(ctx context.Context, controllerRoot str
 		OutputSchema:    service.schemaPath,
 		OutputDirectory: filepath.Dir(manifestPath),
 		Access:          agent.AccessWorkspaceWrite,
+		ResumeSessionID: resumeSessionID,
 	})
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("run specification agent: %w", err))
@@ -170,6 +176,10 @@ func (service *SpecificationService) run(ctx context.Context, controllerRoot str
 	outcome, err := service.decoder.Decode(runResult.FinalOutput)
 	if err != nil {
 		return service.fail(controllerRoot, running, fmt.Errorf("validate specification agent result: %w", err))
+	}
+	running, err = persistAgentSession(service.transition, controllerRoot, running, specificationSessionRole, runResult.SessionID, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, running, err)
 	}
 	result := SpecificationResult{Manifest: running, SessionID: runResult.SessionID, Progress: runResult.Progress}
 	if outcome.Status == agent.OutcomeBlocked {

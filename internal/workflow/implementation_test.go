@@ -35,7 +35,7 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	if err != nil {
 		t.Fatalf("implement: %v", err)
 	}
-	wantEvents := []string{"read", "transition:implementation/running", "render:implement", "diff:capture", "agent", "diff:inspect", "decode", "worktree:capture", "checks", "worktree:inspect"}
+	wantEvents := []string{"read", "transition:implementation/running", "render:implement", "diff:capture", "agent", "diff:inspect", "decode", "transition:implementation/running", "worktree:capture", "checks", "worktree:inspect"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -93,15 +93,16 @@ func TestImplementationStartsFromIssueRequirementsWhenSpecificationWasSkipped(t 
 	}
 }
 
-func TestImplementationResumeUsesFreshTypedPromptBeforeRunningAllChecks(t *testing.T) {
+func TestImplementationResumeUsesPersistedSessionAndTypedPromptBeforeChecks(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)
 	manifest.Phase = state.PhaseImplementation
 	manifest.BlockerSequence = 1
 	manifest.Blocker = answeredBlocker(state.PhaseImplementation)
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Implementation: "existing-thread"}
 	stateStore := &implementationState{manifest: manifest, events: &events}
 	resumePrompt := &implementationPrompt{label: "resume", rendered: "resume prompt", events: &events}
-	agentRunner := &implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"continued"}`), SessionID: "fresh-thread"}}}}
+	agentRunner := &implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"continued"}`), SessionID: "existing-thread"}}}}
 	service := workflow.NewImplementationService(
 		stateStore, stateStore,
 		&implementationPrompt{label: "implement", events: &events},
@@ -116,7 +117,7 @@ func TestImplementationResumeUsesFreshTypedPromptBeforeRunningAllChecks(t *testi
 	if err != nil {
 		t.Fatalf("resume implementation: %v", err)
 	}
-	if !reflect.DeepEqual(result.SessionIDs, []string{"fresh-thread"}) || agentRunner.requests[0].Prompt != "resume prompt" || len(result.CheckResults) != 1 {
+	if !reflect.DeepEqual(result.SessionIDs, []string{"existing-thread"}) || agentRunner.requests[0].Prompt != "resume prompt" || agentRunner.requests[0].ResumeSessionID != "existing-thread" || len(result.CheckResults) != 1 {
 		t.Fatalf("result=%#v requests=%#v", result, agentRunner.requests)
 	}
 	if resumePrompt.data.Blocker == nil || resumePrompt.data.Blocker.Answer != "Use option A" || resumePrompt.data.Blocker.Question != "Which behavior?" {
@@ -157,7 +158,7 @@ func TestImplementationRepairsFailedChecksWithExactEvidenceAndRerunsAllChecks(t 
 	repairPrompt := &implementationPrompt{label: "repair", rendered: "repair", events: &events}
 	agentRunner := &implementationAgent{events: &events, responses: []agentResponse{
 		{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"initial"}`), SessionID: "initial"}},
-		{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"fixed"}`), SessionID: "repair-1"}},
+		{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"fixed"}`), SessionID: "initial"}},
 	}}
 	decoder := &implementationDecoder{events: &events, outcomes: []agent.Outcome{
 		{Status: agent.OutcomeCompleted, Summary: "initial"},
@@ -181,6 +182,9 @@ func TestImplementationRepairsFailedChecksWithExactEvidenceAndRerunsAllChecks(t 
 	if len(agentRunner.requests) != 2 || agentRunner.requests[1].Prompt != "repair" || len(checkRunner.definitions) != 2 {
 		t.Fatalf("agent calls = %d, check calls = %d", len(agentRunner.requests), len(checkRunner.definitions))
 	}
+	if agentRunner.requests[0].ResumeSessionID != "" || agentRunner.requests[1].ResumeSessionID != "initial" {
+		t.Fatalf("session reuse requests = %#v", agentRunner.requests)
+	}
 	if diff.inspects != 2 {
 		t.Fatalf("post-agent scope inspections = %d, want one per workspace-write run", diff.inspects)
 	}
@@ -192,8 +196,38 @@ func TestImplementationRepairsFailedChecksWithExactEvidenceAndRerunsAllChecks(t 
 			t.Errorf("check run %d definitions = %#v", index, checkRunner.definitions[index])
 		}
 	}
-	if !reflect.DeepEqual(result.CheckResults, passing) || !reflect.DeepEqual(result.SessionIDs, []string{"initial", "repair-1"}) {
+	if !reflect.DeepEqual(result.CheckResults, passing) || !reflect.DeepEqual(result.SessionIDs, []string{"initial", "initial"}) {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestImplementationBoundsFailedCheckOutputPassedToRepairAgent(t *testing.T) {
+	manifest, controllerRoot := implementationManifest(t)
+	events := []string{}
+	stateStore := &implementationState{manifest: manifest, events: &events}
+	repairPrompt := &implementationPrompt{label: "repair", rendered: "repair", events: &events}
+	runner := &implementationAgent{events: &events, responses: []agentResponse{
+		{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"initial"}`), SessionID: "implementation-session"}},
+		{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"fixed"}`), SessionID: "implementation-session"}},
+	}}
+	decoder := &implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted}, {Status: agent.OutcomeCompleted}}}
+	largeOutput := "discarded-prefix\n" + strings.Repeat("x", 64<<10) + "\nuseful-tail"
+	failed := checks.Result{Name: "tests", Command: []string{"go", "test", "./..."}, ExitCode: 1, Stderr: largeOutput}
+	passing := []checks.Result{{Name: "tests", Command: failed.Command, ExitCode: 0}}
+	service := workflow.NewImplementationService(
+		stateStore, stateStore,
+		&implementationPrompt{label: "implement", rendered: "implement", events: &events}, repairPrompt,
+		runner, decoder, &implementationChecks{events: &events, results: [][]checks.Result{{failed}, passing}},
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+		[]checks.Definition{{Name: "tests", Command: failed.Command, Timeout: time.Minute}}, nil,
+	)
+
+	if _, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID); err != nil {
+		t.Fatalf("implement: %v", err)
+	}
+	evidence := repairPrompt.data.CheckResults[0]
+	if len(evidence.Stderr) > 16<<10 || !evidence.StderrTruncated || !strings.HasSuffix(evidence.Stderr, "useful-tail") || strings.Contains(evidence.Stderr, "discarded-prefix") {
+		t.Fatalf("bounded repair evidence: length=%d truncated=%t suffix=%q", len(evidence.Stderr), evidence.StderrTruncated, evidence.Stderr[len(evidence.Stderr)-20:])
 	}
 }
 
@@ -217,7 +251,7 @@ func TestImplementationStopsAfterThreeCheckFixInvocations(t *testing.T) {
 		agentRunner, decoder, checkRunner, &implementationDiff{events: &events}, &worktreeStateFake{events: &events},
 		filepath.Join(t.TempDir(), "schema.json"), time.Minute,
 		[]checks.Definition{{Name: "tests", Command: []string{"go", "test", "./..."}, Timeout: time.Minute}}, nil,
-	)
+	).WithMaxCheckRepairs(3)
 
 	result, err := service.Implement(context.Background(), controllerRoot, manifest.WorkflowID)
 	if err == nil || !strings.Contains(err.Error(), "failed after 3 repair attempts") {
@@ -431,6 +465,8 @@ type implementationAgent struct {
 	responses []agentResponse
 	contexts  []context.Context
 }
+
+func (*implementationAgent) Provider() agent.Provider { return agent.ProviderCodex }
 
 type blockingImplementationAgent struct {
 	events *[]string

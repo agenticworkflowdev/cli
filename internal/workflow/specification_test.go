@@ -38,7 +38,7 @@ func TestSpecificationPhasePersistsTransitionBeforeRenderingAndRunning(t *testin
 	if err != nil {
 		t.Fatalf("create specification: %v", err)
 	}
-	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode", "transition:spec/running"}
+	wantEvents := []string{"read", "transition:spec/running", "render", "agent", "decode", "transition:spec/running", "transition:spec/running"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
@@ -93,17 +93,18 @@ func TestSpecificationPhaseReturnsTypedBlockerWithoutMisclassifyingItAsFailure(t
 	}
 }
 
-func TestSpecificationResumeUsesFreshTypedBlockerPromptAndVerifiesSpecification(t *testing.T) {
+func TestSpecificationResumeUsesPersistedSessionAndTypedBlockerPrompt(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := specificationManifest(t)
 	manifest.Phase = state.PhaseSpec
 	manifest.BlockerSequence = 1
 	manifest.Blocker = answeredBlocker(state.PhaseSpec)
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Specification: "existing-thread"}
 	stateStore := &specificationState{manifest: manifest, events: &events}
 	resumePrompt := &specificationPrompt{events: &events, rendered: "resume prompt"}
 	runner := &specificationAgent{events: &events, run: func(request agent.Request) (agent.RunResult, error) {
 		writeSpecification(t, controllerRoot, manifest, []byte("# Specification\n"))
-		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "fresh-thread"}, nil
+		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "existing-thread"}, nil
 	}}
 	service := workflow.NewSpecificationService(
 		stateStore, stateStore, &specificationPrompt{events: &events}, runner,
@@ -115,11 +116,38 @@ func TestSpecificationResumeUsesFreshTypedBlockerPromptAndVerifiesSpecification(
 	if err != nil {
 		t.Fatalf("resume specification: %v", err)
 	}
-	if result.SessionID != "fresh-thread" || result.Manifest.SpecificationPath == "" || runner.request.Prompt != "resume prompt" {
+	if result.SessionID != "existing-thread" || result.Manifest.SpecificationPath == "" || runner.request.Prompt != "resume prompt" || runner.request.ResumeSessionID != "existing-thread" {
 		t.Fatalf("result=%#v request=%#v", result, runner.request)
 	}
 	if resumePrompt.data.Blocker == nil || resumePrompt.data.Blocker.Question != manifest.Blocker.Question || resumePrompt.data.Blocker.Answer != manifest.Blocker.Answer.Body {
 		t.Fatalf("resume prompt blocker data = %#v", resumePrompt.data.Blocker)
+	}
+}
+
+func TestSpecificationResumeRejectsASessionFromAnotherProviderBeforeLaunchingAgent(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := specificationManifest(t)
+	manifest.Phase = state.PhaseSpec
+	manifest.BlockerSequence = 1
+	manifest.Blocker = answeredBlocker(state.PhaseSpec)
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Specification: "existing-thread"}
+	stateStore := &specificationState{manifest: manifest, events: &events}
+	runner := &specificationAgent{events: &events, provider: agent.ProviderClaudeCode}
+	service := workflow.NewSpecificationService(
+		stateStore, stateStore, &specificationPrompt{events: &events}, runner,
+		&specificationDecoder{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+		&specificationPrompt{events: &events, rendered: "resume prompt"},
+	)
+
+	result, err := service.Resume(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err == nil || !strings.Contains(err.Error(), "current provider") {
+		t.Fatalf("resume error = %v, want provider mismatch", err)
+	}
+	if runner.called {
+		t.Fatal("agent was launched with a session owned by another provider")
+	}
+	if result.Manifest.Status != state.StatusFailed {
+		t.Fatalf("manifest status = %q, want failed", result.Manifest.Status)
 	}
 }
 
@@ -375,12 +403,20 @@ func (renderer *specificationPrompt) Render(data prompt.PromptData) (string, err
 
 type specificationAgent struct {
 	events     *[]string
+	provider   agent.Provider
 	called     bool
 	request    agent.Request
 	result     agent.RunResult
 	err        error
 	run        func(agent.Request) (agent.RunResult, error)
 	runContext func(context.Context, agent.Request) (agent.RunResult, error)
+}
+
+func (runner *specificationAgent) Provider() agent.Provider {
+	if runner.provider != "" {
+		return runner.provider
+	}
+	return agent.ProviderCodex
 }
 
 func (runner *specificationAgent) Run(ctx context.Context, request agent.Request) (agent.RunResult, error) {

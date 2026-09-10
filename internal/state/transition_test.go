@@ -300,6 +300,44 @@ func TestTransitionAllowsSpecificationPathToBeRecordedOnce(t *testing.T) {
 	}
 }
 
+func TestTransitionRecordsEachAgentSessionOnce(t *testing.T) {
+	root := t.TempDir()
+	store := state.NewStore()
+	current := manifestAt(root, state.PhaseSpec, state.StatusRunning)
+	if err := store.Save(root, current); err != nil {
+		t.Fatal(err)
+	}
+
+	withSpecificationSession := current
+	withSpecificationSession.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, withSpecificationSession); err != nil {
+		t.Fatalf("record specification session: %v", err)
+	}
+
+	changed := withSpecificationSession
+	changed.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "different-session"}
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, changed); err == nil || !strings.Contains(err.Error(), "session") {
+		t.Fatalf("changed specification session error = %v", err)
+	}
+
+	changedProvider := withSpecificationSession
+	changedProvider.AgentSessions = &state.AgentSessions{Provider: "claude-code", Specification: "spec-session"}
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, changedProvider); err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Fatalf("changed agent session provider error = %v", err)
+	}
+
+	implementation := withSpecificationSession
+	implementation.Phase = state.PhaseImplementation
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, implementation); err != nil {
+		t.Fatalf("enter implementation: %v", err)
+	}
+	withImplementationSession := implementation
+	withImplementationSession.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session", Implementation: "implementation-session"}
+	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, withImplementationSession); err != nil {
+		t.Fatalf("record implementation session: %v", err)
+	}
+}
+
 func manifestAt(root string, phase state.Phase, status state.Status) state.Manifest {
 	manifest := validManifest(root)
 	manifest.Phase = phase

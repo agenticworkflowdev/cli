@@ -53,8 +53,13 @@ func NewRunner(binary string, process processrun.Runner) (*Runner, error) {
 	return &Runner{binary: binary, process: process}, nil
 }
 
-// Run starts one fresh Codex exec session and reads its final result from the
-// controller-owned output file.
+// Provider reports the durable session namespace owned by this adapter.
+func (*Runner) Provider() agent.Provider {
+	return agent.ProviderCodex
+}
+
+// Run starts or resumes one Codex exec session and reads its final result from
+// the controller-owned output file.
 func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.RunResult, error) {
 	if runner == nil || runner.process == nil {
 		return agent.RunResult{}, errors.New("Codex runner is not configured")
@@ -74,15 +79,27 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 	}
 	defer os.Remove(outputPath)
 
-	arguments := []string{
-		runner.binary,
-		"exec",
-		"--json",
-		"--sandbox", string(request.Access),
-		"--output-schema", request.OutputSchema,
-		"--cd", request.Worktree,
-		"--output-last-message", outputPath,
-		"-",
+	arguments := []string{runner.binary, "exec"}
+	if request.ResumeSessionID == "" {
+		arguments = append(arguments,
+			"--json",
+			"--sandbox", string(request.Access),
+			"--output-schema", request.OutputSchema,
+			"--cd", request.Worktree,
+			"--output-last-message", outputPath,
+			"-",
+		)
+	} else {
+		arguments = append(arguments,
+			"--json",
+			"--sandbox", string(request.Access),
+			"--cd", request.Worktree,
+			"--output-schema", request.OutputSchema,
+			"--output-last-message", outputPath,
+			"resume",
+			request.ResumeSessionID,
+			"-",
+		)
 	}
 	environment, sensitiveValues := authenticationEnvironment()
 	liveProgress := newLiveProgressWriter(request.Progress, sensitiveValues)
@@ -107,6 +124,12 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 	if err != nil {
 		return agent.RunResult{}, err
 	}
+	if !agent.ValidSessionID(sessionID) {
+		return agent.RunResult{}, errors.New("Codex reported a malformed session identity")
+	}
+	if request.ResumeSessionID != "" && sessionID != request.ResumeSessionID {
+		return agent.RunResult{}, fmt.Errorf("Codex resumed session %q but reported %q", request.ResumeSessionID, sessionID)
+	}
 	finalOutput, err := readFinalOutput(outputPath)
 	if err != nil {
 		return agent.RunResult{}, err
@@ -129,6 +152,9 @@ func validateRequest(request agent.Request) error {
 	}
 	if request.Access != agent.AccessReadOnly && request.Access != agent.AccessWorkspaceWrite {
 		return fmt.Errorf("unsupported Codex access level %q", request.Access)
+	}
+	if request.ResumeSessionID != "" && !agent.ValidSessionID(request.ResumeSessionID) {
+		return errors.New("Codex resume session identity is malformed")
 	}
 	info, err := os.Lstat(request.OutputDirectory)
 	if err != nil {

@@ -89,6 +89,24 @@ func TestRunnerBoundsBothOutputStreams(t *testing.T) {
 	}
 }
 
+func TestRunnerCanPreserveTheTailOfBothOutputStreams(t *testing.T) {
+	result, err := processrun.NewRunner().Run(context.Background(), processrun.Request{
+		Argv:               helperArgv("output"),
+		StdoutLimit:        5,
+		StderrLimit:        4,
+		PreserveOutputTail: true,
+	})
+	if err != nil {
+		t.Fatalf("run helper: %v", err)
+	}
+	if string(result.Stdout) != "vwxyz" || !result.StdoutTruncated {
+		t.Fatalf("stdout = %q, truncated = %v; want output tail", result.Stdout, result.StdoutTruncated)
+	}
+	if string(result.Stderr) != "6789" || !result.StderrTruncated {
+		t.Fatalf("stderr = %q, truncated = %v; want output tail", result.Stderr, result.StderrTruncated)
+	}
+}
+
 func TestRunnerCanReplaceTheInheritedEnvironment(t *testing.T) {
 	t.Setenv("AWDEV_UNRELATED_SECRET", "must-not-leak")
 	result, err := processrun.NewRunner().Run(context.Background(), processrun.Request{

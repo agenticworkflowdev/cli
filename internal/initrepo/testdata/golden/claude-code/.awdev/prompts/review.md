@@ -21,15 +21,18 @@ Duration: {{.Duration}}
 Timed out: {{.TimedOut}}
 Stdout truncated: {{.StdoutTruncated}}
 Stderr truncated: {{.StderrTruncated}}
-Stdout: {{printf "%q" .Stdout}}
-Stderr: {{printf "%q" .Stderr}}
+Stdout omitted by controller: {{.StdoutOmitted}}
+Stderr omitted by controller: {{.StderrOmitted}}
+{{if not .StdoutOmitted}}Stdout: {{printf "%q" .Stdout}}
+{{end}}{{if not .StderrOmitted}}Stderr: {{printf "%q" .Stderr}}
+{{end}}
 
 {{end}}## Review method
 
 1. Read the requirements input and applicable repository instructions. Inspect the complete change relative to the pinned base revision, including new files, then read surrounding code, callers, and tests needed to understand its effects. Do not substitute a moving branch or remote revision for the supplied base.
 2. Trace each acceptance criterion to implementation and verification evidence. Look for missing behavior, regressions, broken contracts, and mishandled boundary or failure cases. Assess security, data integrity, accessibility, concurrency, and performance only where relevant to the change.
 3. Judge the implementation against the repository's actual languages, architecture, and conventions. Do not assume separate frontend/backend components, require a particular framework, or request stylistic rewrites based on personal preference.
-4. Use the supplied check evidence with its stated limits. A passing command establishes only what that command checks; whitespace or build success alone does not prove behavioral correctness. Missing or truncated output is not a successful test. Identify a verification gap only when you can explain the affected requirement and the concrete validation needed.
+4. Use the supplied check evidence with its stated limits. Passing stdout/stderr may be intentionally omitted to reduce prompt size; the controller's exit status, timeout flag, and command metadata remain authoritative. A passing command establishes only what that command checks; whitespace or build success alone does not prove behavioral correctness. Truncated output is incomplete evidence. Identify a verification gap only when you can explain the affected requirement and the concrete validation needed.
 5. Remain read-only: do not repair code, create reports or screenshots on disk, install dependencies, start services, or run checks that can change the worktree. The controller owns check execution and publication.
 
 ## Findings and result

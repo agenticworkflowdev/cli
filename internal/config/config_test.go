@@ -41,6 +41,9 @@ func TestParseAppliesDefaultsAndPreservesArgumentArrays(t *testing.T) {
 	if got.Review.MaxAttempts != 3 {
 		t.Errorf("review max attempts = %d, want 3", got.Review.MaxAttempts)
 	}
+	if got.Implementation.MaxCheckRepairs != 3 {
+		t.Errorf("implementation max check repairs = %d, want 3", got.Implementation.MaxCheckRepairs)
+	}
 	if got.Checks[0].Timeout != 10*time.Minute {
 		t.Errorf("check timeout = %v, want 10m", got.Checks[0].Timeout)
 	}
@@ -118,6 +121,8 @@ func TestParseRejectsInvalidConfiguration(t *testing.T) {
 		{name: "empty executable", input: strings.Replace(validConfig, `["go", "test", "./..."]`, `["", "test"]`, 1), wantErr: "checks[0].command[0] must not be empty"},
 		{name: "review zero", input: strings.Replace(validConfig, `"review": {}`, `"review": {"max_attempts": 0}`, 1), wantErr: "review.max_attempts must be between 1 and 10"},
 		{name: "review too high", input: strings.Replace(validConfig, `"review": {}`, `"review": {"max_attempts": 11}`, 1), wantErr: "review.max_attempts must be between 1 and 10"},
+		{name: "implementation repairs zero", input: strings.Replace(validConfig, `"review": {}`, `"implementation": {"max_check_repairs": 0}, "review": {}`, 1), wantErr: "implementation.max_check_repairs must be between 1 and 10"},
+		{name: "implementation repairs too high", input: strings.Replace(validConfig, `"review": {}`, `"implementation": {"max_check_repairs": 11}, "review": {}`, 1), wantErr: "implementation.max_check_repairs must be between 1 and 10"},
 		{name: "zero agent timeout", input: strings.Replace(validConfig, `"provider": "codex"`, `"provider": "codex", "timeout": "0s"`, 1), wantErr: "agent.timeout must be a positive duration"},
 		{name: "negative agent timeout", input: strings.Replace(validConfig, `"provider": "codex"`, `"provider": "codex", "timeout": "-1s"`, 1), wantErr: "agent.timeout must be a positive duration"},
 		{name: "malformed agent timeout", input: strings.Replace(validConfig, `"provider": "codex"`, `"provider": "codex", "timeout": "soon"`, 1), wantErr: "agent.timeout must be a positive duration"},

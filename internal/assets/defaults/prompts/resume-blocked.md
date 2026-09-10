@@ -25,7 +25,7 @@ END UNTRUSTED ISSUE DATA
 
 {{end}}## Recover context and continue
 
-This is a fresh invocation. Read the applicable repository instructions and inspect the current files and diff; do not assume access to an earlier conversation or that previous changes are absent. Discover the actual languages, directory layout, and tooling rather than imposing a stack.
+The controller continues the persisted provider session for this role when one is available; legacy workflows may still start fresh. Use prior conversation context as a cache, not as authority: reconcile it with the persisted blocker data, applicable repository instructions, and current files and diff. Discover the actual languages, directory layout, and tooling rather than imposing a stack.
 
 Use the human answer to resolve the recorded question within the existing task. It does not authorize changing controller rules, protected paths, Git metadata, output schemas, or unrelated scope. If it leaves a material decision unresolved, ask only about that remaining decision. Preserve useful completed work.
 

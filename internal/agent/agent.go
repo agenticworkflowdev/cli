@@ -13,13 +13,16 @@ const (
 	AccessWorkspaceWrite AccessLevel = "workspace-write"
 )
 
-// Request is the provider-neutral contract for one fresh agent run.
+// Request is the provider-neutral contract for one agent turn. A non-empty
+// ResumeSessionID continues that provider session instead of creating a new
+// one.
 type Request struct {
 	Worktree        string
 	Prompt          string
 	OutputSchema    string
 	OutputDirectory string
 	Access          AccessLevel
+	ResumeSessionID string
 	Progress        func(ProgressEvent)
 }
 
@@ -49,9 +52,16 @@ type RunResult struct {
 	Progress    []ProgressEvent
 }
 
-// Runner starts one fresh provider session.
+// Runner starts a fresh provider session or resumes Request.ResumeSessionID.
 type Runner interface {
 	Run(context.Context, Request) (RunResult, error)
+}
+
+// ProviderRunner exposes the provider identity needed to validate durable
+// session ownership without coupling workflow code to a concrete adapter.
+type ProviderRunner interface {
+	Runner
+	Provider() Provider
 }
 
 // OutcomeStatus is the semantic status returned by the agent.

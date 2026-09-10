@@ -3,6 +3,8 @@ package state
 import (
 	"errors"
 	"fmt"
+
+	"github.com/agenticworkflowdev/cli/internal/agent"
 )
 
 // ManifestRepository is the durable boundary used by transitions.
@@ -61,6 +63,9 @@ func allowedManifestTransition(current, next Manifest) bool {
 }
 
 func validateTransitionData(current, next Manifest) error {
+	if err := validateAgentSessionTransition(current, next); err != nil {
+		return err
+	}
 	if next.BlockerSequence < current.BlockerSequence || next.BlockerSequence > current.BlockerSequence+1 {
 		return errors.New("blocker sequence must be monotonic and advance one blocker at a time")
 	}
@@ -136,6 +141,35 @@ func validateTransitionData(current, next Manifest) error {
 		return err
 	}
 	return nil
+}
+
+func validateAgentSessionTransition(current, next Manifest) error {
+	currentProvider, currentSpecification, currentImplementation := agentSessionValues(current.AgentSessions)
+	nextProvider, nextSpecification, nextImplementation := agentSessionValues(next.AgentSessions)
+	if currentProvider != "" && currentProvider != nextProvider {
+		return errors.New("recorded agent session provider cannot change")
+	}
+	if currentSpecification != "" && currentSpecification != nextSpecification {
+		return errors.New("recorded specification agent session cannot change")
+	}
+	if currentImplementation != "" && currentImplementation != nextImplementation {
+		return errors.New("recorded implementation agent session cannot change")
+	}
+	if currentSpecification == "" && nextSpecification != "" && !(current.Phase == PhaseSpec && next.Phase == PhaseSpec && current.Status == StatusRunning && next.Status == StatusRunning) {
+		return errors.New("specification agent session can be introduced only during spec/running")
+	}
+	implementationPhase := current.Phase == PhaseImplementation || current.Phase == PhaseReview
+	if currentImplementation == "" && nextImplementation != "" && !(implementationPhase && current.Phase == next.Phase && current.Status == StatusRunning && next.Status == StatusRunning) {
+		return errors.New("implementation agent session can be introduced only during implementation or review running state")
+	}
+	return nil
+}
+
+func agentSessionValues(sessions *AgentSessions) (agent.Provider, string, string) {
+	if sessions == nil {
+		return "", "", ""
+	}
+	return sessions.Provider, sessions.Specification, sessions.Implementation
 }
 
 func validateReviewTransition(current, next Manifest) error {

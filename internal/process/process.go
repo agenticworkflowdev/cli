@@ -24,14 +24,15 @@ const (
 // Request describes one direct child-process invocation. Argv contains the
 // executable as its first element and is never interpreted by a shell.
 type Request struct {
-	Directory        string
-	Argv             []string
-	Stdin            []byte
-	Environment      map[string]string
-	CleanEnvironment bool
-	StdoutLimit      int
-	StderrLimit      int
-	StdoutObserver   func([]byte)
+	Directory          string
+	Argv               []string
+	Stdin              []byte
+	Environment        map[string]string
+	CleanEnvironment   bool
+	StdoutLimit        int
+	StderrLimit        int
+	PreserveOutputTail bool
+	StdoutObserver     func([]byte)
 }
 
 // Result records bounded output and process exit metadata.
@@ -144,8 +145,8 @@ func (r *OSRunner) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{ExitCode: -1}, err
 	}
 
-	stdout := newBoundedBuffer(request.StdoutLimit)
-	stderr := newBoundedBuffer(request.StderrLimit)
+	stdout := newBoundedBuffer(request.StdoutLimit, request.PreserveOutputTail)
+	stderr := newBoundedBuffer(request.StderrLimit, request.PreserveOutputTail)
 	command := exec.Command(request.Argv[0], request.Argv[1:]...)
 	command.Dir = request.Directory
 	command.Stdin = bytes.NewReader(request.Stdin)
@@ -263,22 +264,39 @@ func processEnvironment(additions map[string]string, clean bool) []string {
 }
 
 type boundedBuffer struct {
-	mu        sync.Mutex
-	contents  []byte
-	limit     int
-	truncated bool
+	mu           sync.Mutex
+	contents     []byte
+	limit        int
+	preserveTail bool
+	truncated    bool
 }
 
-func newBoundedBuffer(limit int) *boundedBuffer {
+func newBoundedBuffer(limit int, preserveTail bool) *boundedBuffer {
 	if limit <= 0 {
 		limit = defaultOutputLimit
 	}
-	return &boundedBuffer{limit: limit}
+	return &boundedBuffer{limit: limit, preserveTail: preserveTail}
 }
 
 func (b *boundedBuffer) Write(contents []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.preserveTail {
+		if len(b.contents)+len(contents) > b.limit {
+			b.truncated = true
+		}
+		if len(contents) >= b.limit {
+			b.contents = append(b.contents[:0], contents[len(contents)-b.limit:]...)
+			return len(contents), nil
+		}
+		overflow := len(b.contents) + len(contents) - b.limit
+		if overflow > 0 {
+			copy(b.contents, b.contents[overflow:])
+			b.contents = b.contents[:len(b.contents)-overflow]
+		}
+		b.contents = append(b.contents, contents...)
+		return len(contents), nil
+	}
 	available := b.limit - len(b.contents)
 	if available > 0 {
 		kept := len(contents)

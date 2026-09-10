@@ -19,8 +19,8 @@ type IssueData struct {
 	URL    string
 }
 
-// BlockerData is the untrusted question-and-answer pair supplied to a fresh
-// resumed agent invocation.
+// BlockerData is the untrusted question-and-answer pair supplied when an agent
+// role continues after a human blocker.
 type BlockerData struct {
 	Phase        string
 	Question     string

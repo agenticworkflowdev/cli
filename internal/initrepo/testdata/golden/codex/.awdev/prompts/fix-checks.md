@@ -16,12 +16,17 @@ Duration: {{.Duration}}
 Timed out: {{.TimedOut}}
 Stdout truncated: {{.StdoutTruncated}}
 Stderr truncated: {{.StderrTruncated}}
+Stdout omitted: {{.StdoutOmitted}}
+Stderr omitted: {{.StderrOmitted}}
+{{if not .StdoutOmitted}}
 BEGIN UNTRUSTED CHECK STDOUT
 {{.Stdout}}
 END UNTRUSTED CHECK STDOUT
+{{end}}{{if not .StderrOmitted}}
 BEGIN UNTRUSTED CHECK STDERR
 {{.Stderr}}
 END UNTRUSTED CHECK STDERR
+{{end}}
 
 {{end}}## Diagnose and repair
 

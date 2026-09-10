@@ -48,8 +48,13 @@ func NewRunner(binary, model string, process processrun.Runner) (*Runner, error)
 	return &Runner{binary: binary, model: model, process: process}, nil
 }
 
-// Run starts one fresh Claude Code session and reads its authoritative result
-// from the terminal event of the stream-json output.
+// Provider reports the durable session namespace owned by this adapter.
+func (*Runner) Provider() agent.Provider {
+	return agent.ProviderClaudeCode
+}
+
+// Run starts or resumes one Claude Code session and reads its authoritative
+// result from the terminal event of the stream-json output.
 func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.RunResult, error) {
 	if runner == nil || runner.process == nil {
 		return agent.RunResult{}, errors.New("Claude Code runner is not configured")
@@ -66,9 +71,12 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 	if err != nil {
 		return agent.RunResult{}, err
 	}
-	sessionID, err := newSessionIdentity()
-	if err != nil {
-		return agent.RunResult{}, err
+	sessionID := request.ResumeSessionID
+	if sessionID == "" {
+		sessionID, err = newSessionIdentity()
+		if err != nil {
+			return agent.RunResult{}, err
+		}
 	}
 
 	permissionMode := "acceptEdits"
@@ -88,7 +96,12 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 	if strings.TrimSpace(runner.model) != "" {
 		arguments = append(arguments, "--model", runner.model)
 	}
-	arguments = append(arguments, "--session-id", sessionID, "--add-dir", request.Worktree)
+	if request.ResumeSessionID == "" {
+		arguments = append(arguments, "--session-id", sessionID)
+	} else {
+		arguments = append(arguments, "--resume", sessionID)
+	}
+	arguments = append(arguments, "--add-dir", request.Worktree)
 
 	environment, sensitiveValues := authenticationEnvironment()
 	liveProgress := newLiveProgressWriter(request.Progress, sensitiveValues)
@@ -137,6 +150,12 @@ func (runner *Runner) Run(ctx context.Context, request agent.Request) (agent.Run
 	if len(stream.result.structuredOutput) == 0 {
 		return agent.RunResult{}, errors.New("Claude Code completed without a structured result: the model answered with prose instead of the structured output tool")
 	}
+	if !agent.ValidSessionID(stream.sessionID) {
+		return agent.RunResult{}, errors.New("Claude Code reported a malformed session identity")
+	}
+	if request.ResumeSessionID != "" && stream.sessionID != request.ResumeSessionID {
+		return agent.RunResult{}, fmt.Errorf("Claude Code resumed session %q but reported %q", request.ResumeSessionID, stream.sessionID)
+	}
 	return agent.RunResult{
 		FinalOutput: stream.result.structuredOutput,
 		SessionID:   stream.sessionID,
@@ -159,6 +178,9 @@ func validateRequest(request agent.Request) error {
 	}
 	if request.Access != agent.AccessReadOnly && request.Access != agent.AccessWorkspaceWrite {
 		return fmt.Errorf("unsupported Claude Code access level %q", request.Access)
+	}
+	if request.ResumeSessionID != "" && !agent.ValidSessionID(request.ResumeSessionID) {
+		return errors.New("Claude Code resume session identity is malformed")
 	}
 	schemaInfo, err := os.Lstat(request.OutputSchema)
 	if err != nil {

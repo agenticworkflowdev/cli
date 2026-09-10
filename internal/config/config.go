@@ -21,6 +21,7 @@ const (
 	currentSchemaVersion  = 1
 	defaultAgentTimeout   = 30 * time.Minute
 	defaultCheckTimeout   = 10 * time.Minute
+	defaultCheckRepairs   = 3
 	defaultReviewAttempts = 3
 )
 
@@ -31,6 +32,7 @@ type Config struct {
 	Codex          Codex
 	ClaudeCode     ClaudeCode
 	Checks         []checks.Definition
+	Implementation Implementation
 	Review         Review
 	ProtectedPaths []string
 }
@@ -52,19 +54,25 @@ type ClaudeCode struct {
 	Model  string
 }
 
+// Implementation bounds repair-agent turns after deterministic check failures.
+type Implementation struct {
+	MaxCheckRepairs int
+}
+
 // Review bounds independent review-agent invocations.
 type Review struct {
 	MaxAttempts int
 }
 
 type rawConfig struct {
-	SchemaVersion  *int           `json:"schema_version"`
-	Agent          *rawAgent      `json:"agent"`
-	Codex          *rawCodex      `json:"codex"`
-	ClaudeCode     *rawClaudeCode `json:"claude_code"`
-	Checks         *[]rawCheck    `json:"checks"`
-	Review         *rawReview     `json:"review"`
-	ProtectedPaths []string       `json:"protected_paths"`
+	SchemaVersion  *int               `json:"schema_version"`
+	Agent          *rawAgent          `json:"agent"`
+	Codex          *rawCodex          `json:"codex"`
+	ClaudeCode     *rawClaudeCode     `json:"claude_code"`
+	Checks         *[]rawCheck        `json:"checks"`
+	Implementation *rawImplementation `json:"implementation"`
+	Review         *rawReview         `json:"review"`
+	ProtectedPaths []string           `json:"protected_paths"`
 }
 
 type rawAgent struct {
@@ -86,6 +94,10 @@ type rawCheck struct {
 	Directory string   `json:"directory"`
 	Command   []string `json:"command"`
 	Timeout   *string  `json:"timeout"`
+}
+
+type rawImplementation struct {
+	MaxCheckRepairs *int `json:"max_check_repairs"`
 }
 
 type rawReview struct {
@@ -200,6 +212,14 @@ func Parse(contents []byte) (Config, error) {
 		checkDefinitions[index] = checks.Definition{Name: check.Name, Directory: check.Directory, Command: append([]string(nil), check.Command...), Timeout: timeout}
 	}
 
+	maxCheckRepairs := defaultCheckRepairs
+	if raw.Implementation != nil && raw.Implementation.MaxCheckRepairs != nil {
+		maxCheckRepairs = *raw.Implementation.MaxCheckRepairs
+	}
+	if maxCheckRepairs < 1 || maxCheckRepairs > 10 {
+		return Config{}, fmt.Errorf("implementation.max_check_repairs must be between 1 and 10")
+	}
+
 	if raw.Review == nil {
 		return Config{}, fmt.Errorf("review is required")
 	}
@@ -223,6 +243,7 @@ func Parse(contents []byte) (Config, error) {
 		Codex:          codexConfig,
 		ClaudeCode:     claudeCodeConfig,
 		Checks:         checkDefinitions,
+		Implementation: Implementation{MaxCheckRepairs: maxCheckRepairs},
 		Review:         Review{MaxAttempts: maxAttempts},
 		ProtectedPaths: append([]string(nil), raw.ProtectedPaths...),
 	}, nil

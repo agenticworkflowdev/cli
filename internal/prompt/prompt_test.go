@@ -155,7 +155,7 @@ END STDERR
 	}
 }
 
-func TestDefaultReviewPromptIncludesPinnedSpecAndCompleteCheckEvidence(t *testing.T) {
+func TestDefaultReviewPromptIncludesPinnedSpecAndCompactCheckEvidence(t *testing.T) {
 	contents, err := fs.ReadFile(assets.Defaults(), "prompts/review.md")
 	if err != nil {
 		t.Fatal(err)
@@ -170,13 +170,13 @@ func TestDefaultReviewPromptIncludesPinnedSpecAndCompleteCheckEvidence(t *testin
 		Branch:            "gh-17-title",
 		CheckResults: []checks.Result{{
 			Name: "unit", Command: []string{"go", "test", "./..."}, ExitCode: 0,
-			Stdout: "literal {{.WorkflowID}}", Duration: time.Second,
+			StdoutOmitted: true, Duration: time.Second,
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".awdev/specs/gh-17-title.md", strings.Repeat("a", 40), "gh-17-title", "unit", `["go" "test" "./..."]`, "literal {{.WorkflowID}}"} {
+	for _, want := range []string{".awdev/specs/gh-17-title.md", strings.Repeat("a", 40), "gh-17-title", "unit", `["go" "test" "./..."]`, "Stdout omitted by controller: true"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("review prompt does not contain %q:\n%s", want, got)
 		}

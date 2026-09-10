@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agenticworkflowdev/cli/internal/agent"
 	"github.com/agenticworkflowdev/cli/internal/checks"
@@ -15,7 +16,11 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
-const maxCheckFixInvocations = 3
+const (
+	defaultMaxCheckRepairs = 3
+	promptCheckOutputLimit = 16 << 10
+	omittedPassingOutput   = "[omitted by controller: check passed]"
+)
 
 // ImplementationResult records the current durable state, agent observations,
 // and check evidence describing the current worktree diff.
@@ -93,6 +98,7 @@ type ImplementationService struct {
 	timeout         time.Duration
 	definitions     []checks.Definition
 	protectedPaths  []string
+	maxCheckRepairs int
 }
 
 // NewImplementationService constructs the implementation phase service.
@@ -116,10 +122,18 @@ func NewImplementationService(
 		reader: reader, transition: transition, implementPrompt: implementPrompt, repairPrompt: repairPrompt,
 		runner: runner, decoder: decoder, checks: checkRunner, diff: diff, worktree: worktree, schemaPath: schemaPath, timeout: timeout,
 		definitions: append([]checks.Definition(nil), definitions...), protectedPaths: append([]string(nil), protectedPaths...),
+		maxCheckRepairs: defaultMaxCheckRepairs,
 	}
 	if len(resumePrompt) > 0 {
 		service.resumePrompt = resumePrompt[0]
 	}
+	return service
+}
+
+// WithMaxCheckRepairs sets the bounded number of repair turns after failed
+// deterministic checks.
+func (service *ImplementationService) WithMaxCheckRepairs(max int) *ImplementationService {
+	service.maxCheckRepairs = max
 	return service
 }
 
@@ -151,8 +165,9 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 	return service.run(ctx, controllerRoot, running, service.implementPrompt)
 }
 
-// Resume continues implementation in a fresh agent run, then repeats the
-// complete deterministic check and bounded repair cycle.
+// Resume continues implementation in its prior provider session, then repeats
+// the complete deterministic check and bounded repair cycle. Legacy manifests
+// without a session identity start a fresh session.
 func (service *ImplementationService) Resume(ctx context.Context, controllerRoot, workflowID string) (ImplementationResult, error) {
 	if err := service.validate(); err != nil {
 		return ImplementationResult{}, err
@@ -177,6 +192,9 @@ func (service *ImplementationService) validate() error {
 	if service.timeout <= 0 {
 		return errors.New("implementation agent timeout must be positive")
 	}
+	if service.maxCheckRepairs < 1 || service.maxCheckRepairs > 10 {
+		return errors.New("implementation max check repairs must be between 1 and 10")
+	}
 	if !filepath.IsAbs(service.schemaPath) || filepath.Clean(service.schemaPath) != service.schemaPath {
 		return errors.New("implementation result schema must be an absolute clean path")
 	}
@@ -195,12 +213,21 @@ func (service *ImplementationService) run(ctx context.Context, controllerRoot st
 	}
 	basePromptData := promptData(running, running.SpecificationPath)
 	result := ImplementationResult{Manifest: running}
+	resumeSessionID, err := resumableAgentSession(running, implementationSessionRole, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, running, result, err)
+	}
 
-	outcome, runResult, err := service.runAgent(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), renderer, basePromptData)
+	outcome, runResult, err := service.runAgent(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), renderer, basePromptData, resumeSessionID)
 	result.observe(runResult)
 	if err != nil {
 		return service.fail(controllerRoot, running, result, fmt.Errorf("run implementation agent: %w", err))
 	}
+	running, err = persistAgentSession(service.transition, controllerRoot, running, implementationSessionRole, runResult.SessionID, service.runner)
+	if err != nil {
+		return service.fail(controllerRoot, running, result, err)
+	}
+	result.Manifest = running
 	if outcome.Status == agent.OutcomeBlocked {
 		result.Blocker = &BlockerRequest{Phase: state.PhaseImplementation, Question: outcome.Question}
 		return result, nil
@@ -228,17 +255,26 @@ func (service *ImplementationService) run(ctx context.Context, controllerRoot st
 			result.CheckedState = checkedState
 			return result, nil
 		}
-		if repairAttempt == maxCheckFixInvocations {
-			return service.fail(controllerRoot, running, result, fmt.Errorf("deterministic checks still failed after %d repair attempts", maxCheckFixInvocations))
+		if repairAttempt == service.maxCheckRepairs {
+			return service.fail(controllerRoot, running, result, fmt.Errorf("deterministic checks still failed after %d repair attempts", service.maxCheckRepairs))
 		}
 
 		repairData := basePromptData
-		repairData.CheckResults = failed
-		outcome, runResult, err = service.runAgent(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.repairPrompt, repairData)
+		repairData.CheckResults = checkResultsForRepair(failed)
+		resumeSessionID, resumeErr := resumableAgentSession(running, implementationSessionRole, service.runner)
+		if resumeErr != nil {
+			return service.fail(controllerRoot, running, result, resumeErr)
+		}
+		outcome, runResult, err = service.runAgent(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.repairPrompt, repairData, resumeSessionID)
 		result.observe(runResult)
 		if err != nil {
 			return service.fail(controllerRoot, running, result, fmt.Errorf("run check-fix agent: %w", err))
 		}
+		running, err = persistAgentSession(service.transition, controllerRoot, running, implementationSessionRole, runResult.SessionID, service.runner)
+		if err != nil {
+			return service.fail(controllerRoot, running, result, err)
+		}
+		result.Manifest = running
 		if outcome.Status == agent.OutcomeBlocked {
 			result.Blocker = &BlockerRequest{Phase: state.PhaseImplementation, Question: outcome.Question}
 			result.CheckResults = nil
@@ -261,6 +297,7 @@ func (service *ImplementationService) runAgent(
 	controllerRoot, worktree, outputDirectory string,
 	renderer SpecificationPromptRenderer,
 	data prompt.PromptData,
+	resumeSessionID string,
 ) (agent.Outcome, agent.RunResult, error) {
 	promptText, err := renderer.Render(data)
 	if err != nil {
@@ -275,7 +312,7 @@ func (service *ImplementationService) runAgent(
 	runContext, cancel := context.WithTimeout(ctx, service.timeout)
 	runResult, runErr := service.runner.Run(runContext, agent.Request{
 		Worktree: worktree, Prompt: promptText, OutputSchema: service.schemaPath,
-		OutputDirectory: outputDirectory, Access: agent.AccessWorkspaceWrite,
+		OutputDirectory: outputDirectory, Access: agent.AccessWorkspaceWrite, ResumeSessionID: resumeSessionID,
 	})
 	cancel()
 	offending, inspectErr := service.diff.Inspect(ctx, diffScope, baseline)
@@ -316,6 +353,41 @@ func cloneCheckResults(results []checks.Result) []checks.Result {
 func cloneCheckResult(result checks.Result) checks.Result {
 	result.Command = append([]string(nil), result.Command...)
 	return result
+}
+
+func checkResultsForRepair(results []checks.Result) []checks.Result {
+	compact := cloneCheckResults(results)
+	for index := range compact {
+		compact[index].Stdout, compact[index].StdoutTruncated = truncateCheckOutput(compact[index].Stdout, compact[index].StdoutTruncated)
+		compact[index].Stderr, compact[index].StderrTruncated = truncateCheckOutput(compact[index].Stderr, compact[index].StderrTruncated)
+	}
+	return compact
+}
+
+func checkResultsForReview(results []checks.Result) []checks.Result {
+	compact := cloneCheckResults(results)
+	for index := range compact {
+		compact[index].StdoutOmitted = compact[index].Stdout != ""
+		compact[index].StderrOmitted = compact[index].Stderr != ""
+		if compact[index].StdoutOmitted {
+			compact[index].Stdout = omittedPassingOutput
+		}
+		if compact[index].StderrOmitted {
+			compact[index].Stderr = omittedPassingOutput
+		}
+	}
+	return compact
+}
+
+func truncateCheckOutput(value string, alreadyTruncated bool) (string, bool) {
+	if len(value) <= promptCheckOutputLimit {
+		return value, alreadyTruncated
+	}
+	value = value[len(value)-promptCheckOutputLimit:]
+	for len(value) > 0 && !utf8.RuneStart(value[0]) {
+		value = value[1:]
+	}
+	return value, true
 }
 
 func (service *ImplementationService) fail(controllerRoot string, running state.Manifest, result ImplementationResult, cause error) (ImplementationResult, error) {
