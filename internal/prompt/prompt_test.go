@@ -84,8 +84,16 @@ func TestDefaultReconPromptIsIssueDirectedAndToolAgnostic(t *testing.T) {
 		"Stop once",
 		"# Recon",
 		`"recon"`,
+		"wf_0123456789abcdef0123456789abcdef",
+		"owner/repository",
+		"gh-17-a-title",
+		strings.Repeat("a", 40),
 		"/repo/.awdev/worktrees/gh-17-a-title",
+		".awdev/issues/wf_0123456789abcdef0123456789abcdef/recon.md",
+		"Issue number: 17",
+		"https://github.com/owner/repository/issues/17",
 		"Add recon {{.WorkflowID}}",
+		"Prefer a map when available.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered recon prompt does not contain %q:\n%s", want, got)

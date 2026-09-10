@@ -58,26 +58,8 @@ func (decoder *ResultDecoder) Decode(contents []byte) (Outcome, error) {
 	if decoder == nil || decoder.schema == nil {
 		return Outcome{}, errors.New("agent result decoder is not configured")
 	}
-	var document any
-	generic := json.NewDecoder(bytes.NewReader(contents))
-	generic.UseNumber()
-	if err := generic.Decode(&document); err != nil {
-		return Outcome{}, fmt.Errorf("decode agent result JSON: %w", err)
-	}
-	if err := requireSingleJSONDocument(generic, "agent result"); err != nil {
-		return Outcome{}, err
-	}
-	if err := decoder.schema.Validate(document); err != nil {
-		return Outcome{}, fmt.Errorf("validate agent result schema: %w", err)
-	}
-
-	strict := json.NewDecoder(bytes.NewReader(contents))
-	strict.DisallowUnknownFields()
-	var outcome Outcome
-	if err := strict.Decode(&outcome); err != nil {
-		return Outcome{}, fmt.Errorf("decode typed agent result: %w", err)
-	}
-	if err := requireSingleJSONDocument(strict, "agent result"); err != nil {
+	outcome, err := decodeValidatedResult[Outcome](decoder.schema, contents, "agent result")
+	if err != nil {
 		return Outcome{}, err
 	}
 	if err := outcome.Validate(); err != nil {
@@ -128,26 +110,8 @@ func (decoder *ReconResultDecoder) Decode(contents []byte) (ReconOutcome, error)
 	if decoder == nil || decoder.schema == nil {
 		return ReconOutcome{}, errors.New("recon result decoder is not configured")
 	}
-	var document any
-	generic := json.NewDecoder(bytes.NewReader(contents))
-	generic.UseNumber()
-	if err := generic.Decode(&document); err != nil {
-		return ReconOutcome{}, fmt.Errorf("decode recon result JSON: %w", err)
-	}
-	if err := requireSingleJSONDocument(generic, "recon result"); err != nil {
-		return ReconOutcome{}, err
-	}
-	if err := decoder.schema.Validate(document); err != nil {
-		return ReconOutcome{}, fmt.Errorf("validate recon result schema: %w", err)
-	}
-
-	strict := json.NewDecoder(bytes.NewReader(contents))
-	strict.DisallowUnknownFields()
-	var outcome ReconOutcome
-	if err := strict.Decode(&outcome); err != nil {
-		return ReconOutcome{}, fmt.Errorf("decode typed recon result: %w", err)
-	}
-	if err := requireSingleJSONDocument(strict, "recon result"); err != nil {
+	outcome, err := decodeValidatedResult[ReconOutcome](decoder.schema, contents, "recon result")
+	if err != nil {
 		return ReconOutcome{}, err
 	}
 	trimmed := strings.TrimSpace(outcome.Recon)
@@ -155,6 +119,33 @@ func (decoder *ReconResultDecoder) Decode(contents []byte) (ReconOutcome, error)
 		return ReconOutcome{}, errors.New("recon result must contain a non-empty Markdown artifact headed by # Recon")
 	}
 	return outcome, nil
+}
+
+func decodeValidatedResult[T any](schema *jsonschema.Schema, contents []byte, name string) (T, error) {
+	var zero T
+	var document any
+	generic := json.NewDecoder(bytes.NewReader(contents))
+	generic.UseNumber()
+	if err := generic.Decode(&document); err != nil {
+		return zero, fmt.Errorf("decode %s JSON: %w", name, err)
+	}
+	if err := requireSingleJSONDocument(generic, name); err != nil {
+		return zero, err
+	}
+	if err := schema.Validate(document); err != nil {
+		return zero, fmt.Errorf("validate %s schema: %w", name, err)
+	}
+
+	strict := json.NewDecoder(bytes.NewReader(contents))
+	strict.DisallowUnknownFields()
+	var result T
+	if err := strict.Decode(&result); err != nil {
+		return zero, fmt.Errorf("decode typed %s: %w", name, err)
+	}
+	if err := requireSingleJSONDocument(strict, name); err != nil {
+		return zero, err
+	}
+	return result, nil
 }
 
 func requireSingleJSONDocument(decoder *json.Decoder, name string) error {
