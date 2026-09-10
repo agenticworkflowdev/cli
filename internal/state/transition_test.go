@@ -18,6 +18,7 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 	}
 	points := []point{
 		{state.PhaseInit, state.StatusRunning},
+		{state.PhaseRecon, state.StatusRunning}, {state.PhaseRecon, state.StatusFailed},
 		{state.PhaseSpec, state.StatusRunning}, {state.PhaseSpec, state.StatusBlocked}, {state.PhaseSpec, state.StatusFailed},
 		{state.PhaseImplementation, state.StatusRunning}, {state.PhaseImplementation, state.StatusBlocked}, {state.PhaseImplementation, state.StatusFailed},
 		{state.PhaseReview, state.StatusRunning}, {state.PhaseReview, state.StatusBlocked}, {state.PhaseReview, state.StatusFailed},
@@ -26,7 +27,11 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 	}
 	allowed := map[string]bool{
 		"init/running->init/running":                     true,
-		"init/running->spec/running":                     true,
+		"init/running->recon/running":                    true,
+		"recon/running->recon/running":                   true,
+		"recon/running->recon/failed":                    true,
+		"recon/running->spec/running":                    true,
+		"recon/failed->recon/failed":                     true,
 		"spec/running->spec/running":                     true,
 		"spec/running->spec/blocked":                     true,
 		"spec/running->spec/failed":                      true,
@@ -90,9 +95,9 @@ func TestTransitionServiceEnumeratesAllowedTransitions(t *testing.T) {
 	}
 }
 
-func TestTransitionAllowsInitToImplementationOnlyWhenSpecificationWasSkipped(t *testing.T) {
+func TestTransitionAllowsReconToImplementationOnlyWhenSpecificationWasSkipped(t *testing.T) {
 	root := t.TempDir()
-	current := manifestAt(root, state.PhaseInit, state.StatusRunning)
+	current := manifestAt(root, state.PhaseRecon, state.StatusRunning)
 	current.SkipSpecification = true
 	next := current
 	next.Phase = state.PhaseImplementation
@@ -103,24 +108,17 @@ func TestTransitionAllowsInitToImplementationOnlyWhenSpecificationWasSkipped(t *
 	if err := state.NewTransitionService(store).Transition(root, current.WorkflowID, next); err != nil {
 		t.Fatalf("transition skipped specification: %v", err)
 	}
-}
 
-func TestTransitionKeepsSpecificationSubstepsInForwardOrder(t *testing.T) {
-	root := t.TempDir()
-	store := state.NewStore()
-	recon := manifestAt(root, state.PhaseSpec, state.StatusRunning)
-	recon.Substep = state.SubstepRecon
-	if err := store.Save(root, recon); err != nil {
+	normalRoot := t.TempDir()
+	normal := manifestAt(normalRoot, state.PhaseRecon, state.StatusRunning)
+	normalNext := normal
+	normalNext.Phase = state.PhaseImplementation
+	normalStore := state.NewStore()
+	if err := normalStore.Save(normalRoot, normal); err != nil {
 		t.Fatal(err)
 	}
-
-	specification := recon
-	specification.Substep = state.SubstepSpecification
-	if err := state.NewTransitionService(store).Transition(root, recon.WorkflowID, specification); err != nil {
-		t.Fatalf("advance recon to specification: %v", err)
-	}
-	if err := state.NewTransitionService(store).Transition(root, recon.WorkflowID, recon); err == nil || !strings.Contains(err.Error(), "substep") {
-		t.Fatalf("backward substep transition error = %v", err)
+	if err := state.NewTransitionService(normalStore).Transition(normalRoot, normal.WorkflowID, normalNext); err == nil {
+		t.Fatal("recon bypassed specification without --skip-spec")
 	}
 }
 

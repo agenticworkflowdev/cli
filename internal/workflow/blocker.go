@@ -53,15 +53,15 @@ type BlockerPublisher interface {
 // GitHub write and the workflow blocks only after stable comment identity is
 // durable.
 type BlockerService struct {
-	reader     SpecificationManifestReader
-	transition SpecificationTransitioner
+	reader     WorkflowManifestReader
+	transition WorkflowTransitioner
 	comments   blockerCommentGateway
 	now        func() time.Time
 }
 
 // NewBlockerService constructs blocker publication at the application-service
 // seam.
-func NewBlockerService(reader SpecificationManifestReader, transition SpecificationTransitioner, comments blockerCommentGateway, now func() time.Time) *BlockerService {
+func NewBlockerService(reader WorkflowManifestReader, transition WorkflowTransitioner, comments blockerCommentGateway, now func() time.Time) *BlockerService {
 	return &BlockerService{reader: reader, transition: transition, comments: comments, now: now}
 }
 

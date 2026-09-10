@@ -88,8 +88,8 @@ type ReviewEvidenceWriter interface {
 
 // ReviewService runs bounded independent reviews and corrections.
 type ReviewService struct {
-	reader           SpecificationManifestReader
-	transition       SpecificationTransitioner
+	reader           WorkflowManifestReader
+	transition       WorkflowTransitioner
 	reviewPrompt     SpecificationPromptRenderer
 	correctionPrompt SpecificationPromptRenderer
 	resumePrompt     SpecificationPromptRenderer
@@ -110,8 +110,8 @@ type ReviewService struct {
 
 // NewReviewService constructs the independent review/correction service.
 func NewReviewService(
-	reader SpecificationManifestReader,
-	transition SpecificationTransitioner,
+	reader WorkflowManifestReader,
+	transition WorkflowTransitioner,
 	reviewPrompt SpecificationPromptRenderer,
 	correctionPrompt SpecificationPromptRenderer,
 	runner agent.Runner,

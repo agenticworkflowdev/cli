@@ -312,7 +312,6 @@ type publicWorkflowStatus struct {
 	Repository      string            `json:"repository"`
 	Issue           publicIssueStatus `json:"issue"`
 	Phase           state.Phase       `json:"phase"`
-	Substep         state.Substep     `json:"substep,omitempty"`
 	Status          state.Status      `json:"status"`
 	BlockerQuestion string            `json:"blocker_question,omitempty"`
 	LastError       string            `json:"last_error,omitempty"`
@@ -332,7 +331,6 @@ func renderGitHubStatus(command *cobra.Command, result workflow.StatusResult, js
 			URL:    manifest.Issue.URL,
 		},
 		Phase:   manifest.Phase,
-		Substep: manifest.Substep,
 		Status:  manifest.Status,
 		Warning: result.Warning,
 	}
@@ -357,9 +355,6 @@ func renderGitHubStatus(command *cobra.Command, result workflow.StatusResult, js
 	fmt.Fprintf(&output, "Source: %s\n", public.Source)
 	fmt.Fprintf(&output, "Issue: %s#%d — %s\n", public.Repository, public.Issue.Number, sanitizeHumanText(public.Issue.Title))
 	fmt.Fprintf(&output, "Phase: %s\n", public.Phase)
-	if public.Substep != "" {
-		fmt.Fprintf(&output, "Substep: %s\n", public.Substep)
-	}
 	fmt.Fprintf(&output, "Status: %s\n", public.Status)
 	if public.BlockerQuestion != "" {
 		fmt.Fprintf(&output, "Blocker: %s\n", sanitizeHumanText(public.BlockerQuestion))

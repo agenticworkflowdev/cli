@@ -95,9 +95,9 @@ func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
 	if manifest.WorkflowID != workflowID {
 		return Manifest{}, errors.New("workflow manifest identity does not match its state directory")
 	}
-	migrated, err := migrateManifestPaths(controllerRoot, &manifest)
+	migrated, err := migrateManifest(controllerRoot, &manifest)
 	if err != nil {
-		return Manifest{}, fmt.Errorf("migrate workflow manifest paths: %w", err)
+		return Manifest{}, fmt.Errorf("migrate workflow manifest: %w", err)
 	}
 	if err := manifest.Validate(); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
@@ -119,8 +119,8 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	if store == nil || store.filesystem == nil {
 		return errors.New("manifest store is not configured")
 	}
-	if _, err := migrateManifestPaths(controllerRoot, &manifest); err != nil {
-		return fmt.Errorf("normalize workflow manifest paths: %w", err)
+	if _, err := migrateManifest(controllerRoot, &manifest); err != nil {
+		return fmt.Errorf("normalize workflow manifest: %w", err)
 	}
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
@@ -314,10 +314,40 @@ func (store *Store) validateControllerPaths(controllerRoot string, manifest Mani
 	return nil
 }
 
-func migrateManifestPaths(controllerRoot string, manifest *Manifest) (bool, error) {
+func migrateManifest(controllerRoot string, manifest *Manifest) (bool, error) {
 	if manifest == nil {
 		return false, errors.New("manifest is required")
 	}
+	migrated, err := migrateLegacySubstep(manifest)
+	if err != nil {
+		return false, err
+	}
+	pathsMigrated, err := migrateManifestPaths(controllerRoot, manifest)
+	return migrated || pathsMigrated, err
+}
+
+func migrateLegacySubstep(manifest *Manifest) (bool, error) {
+	if manifest.Substep != "" {
+		if manifest.Phase != PhaseSpec {
+			return false, errors.New("legacy workflow substep is invalid outside the specification phase")
+		}
+		switch manifest.Substep {
+		case SubstepRecon:
+			if manifest.SpecificationPath != "" {
+				return false, errors.New("legacy recon substep cannot have a specification path")
+			}
+			manifest.Phase = PhaseRecon
+		case SubstepSpecification:
+		default:
+			return false, fmt.Errorf("invalid legacy workflow substep %q", manifest.Substep)
+		}
+		manifest.Substep = ""
+		return true, nil
+	}
+	return false, nil
+}
+
+func migrateManifestPaths(controllerRoot string, manifest *Manifest) (bool, error) {
 	migrated := false
 	if filepath.IsAbs(manifest.Worktree) {
 		if filepath.Clean(manifest.Worktree) != manifest.Worktree {

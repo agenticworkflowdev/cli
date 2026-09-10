@@ -31,6 +31,7 @@ type Phase string
 
 const (
 	PhaseInit           Phase = "init"
+	PhaseRecon          Phase = "recon"
 	PhaseSpec           Phase = "spec"
 	PhaseImplementation Phase = "implementation"
 	PhaseReview         Phase = "review"
@@ -38,7 +39,8 @@ const (
 	PhaseDone           Phase = "done"
 )
 
-// Substep names durable work within a top-level workflow phase.
+// Substep is retained only to migrate manifests written while recon was
+// represented inside the specification phase.
 type Substep string
 
 const (
@@ -131,7 +133,7 @@ type Manifest struct {
 	Issue             IssueSnapshot   `json:"issue"`
 	Actor             string          `json:"actor"`
 	Phase             Phase           `json:"phase"`
-	Substep           Substep         `json:"substep,omitempty"`
+	Substep           Substep         `json:"substep,omitempty"` // Legacy; normalized away by Store.
 	Status            Status          `json:"status"`
 	Branch            string          `json:"branch"`
 	BaseSHA           string          `json:"base_sha"`
@@ -234,16 +236,11 @@ func (manifest Manifest) Validate() error {
 	if manifest.SkipSpecification && manifest.Phase == PhaseSpec {
 		return errors.New("a skipped specification cannot enter the specification phase")
 	}
+	if manifest.Phase == PhaseRecon && manifest.SpecificationPath != "" {
+		return errors.New("recon phase cannot have a specification path")
+	}
 	if manifest.Substep != "" {
-		if manifest.Phase != PhaseSpec {
-			return errors.New("workflow substep is only valid during the specification phase")
-		}
-		if manifest.Substep != SubstepRecon && manifest.Substep != SubstepSpecification {
-			return fmt.Errorf("invalid specification substep %q", manifest.Substep)
-		}
-		if manifest.Substep == SubstepRecon && manifest.SpecificationPath != "" {
-			return errors.New("recon substep cannot have a specification path")
-		}
+		return errors.New("legacy workflow substep must be migrated to a top-level phase")
 	}
 	if manifest.AgentSessions != nil {
 		if !manifest.AgentSessions.Provider.Valid() {
@@ -255,11 +252,8 @@ func (manifest Manifest) Validate() error {
 		if manifest.AgentSessions.Specification != "" && !agent.ValidSessionID(manifest.AgentSessions.Specification) || manifest.AgentSessions.Implementation != "" && !agent.ValidSessionID(manifest.AgentSessions.Implementation) {
 			return errors.New("agent session identity is malformed")
 		}
-		if manifest.AgentSessions.Specification != "" && (manifest.SkipSpecification || manifest.Phase == PhaseInit) {
+		if manifest.AgentSessions.Specification != "" && (manifest.SkipSpecification || manifest.Phase == PhaseInit || manifest.Phase == PhaseRecon) {
 			return errors.New("specification agent session is invalid before the specification phase")
-		}
-		if manifest.AgentSessions.Specification != "" && manifest.Substep == SubstepRecon {
-			return errors.New("specification agent session is invalid during recon")
 		}
 		if manifest.AgentSessions.Implementation != "" && manifest.Phase != PhaseImplementation && manifest.Phase != PhaseReview && manifest.Phase != PhasePullRequest && manifest.Phase != PhaseDone {
 			return errors.New("implementation agent session is invalid before the implementation phase")

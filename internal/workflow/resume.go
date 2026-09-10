@@ -52,7 +52,7 @@ type ResumePhaseContinuation interface {
 type ResumeService struct {
 	locker       state.Locker
 	existing     state.ExistingReader
-	transition   SpecificationTransitioner
+	transition   WorkflowTransitioner
 	comments     IssueCommentReader
 	publisher    BlockerPublisher
 	continuation ResumePhaseContinuation
@@ -66,7 +66,7 @@ func (service *ResumeService) WithFinalizer(finalizer Finalizer) *ResumeService 
 }
 
 // NewResumeService constructs GitHub resume orchestration.
-func NewResumeService(locker state.Locker, existing state.ExistingReader, transition SpecificationTransitioner, comments IssueCommentReader, publisher BlockerPublisher, continuation ResumePhaseContinuation) *ResumeService {
+func NewResumeService(locker state.Locker, existing state.ExistingReader, transition WorkflowTransitioner, comments IssueCommentReader, publisher BlockerPublisher, continuation ResumePhaseContinuation) *ResumeService {
 	return &ResumeService{
 		locker: locker, existing: existing, transition: transition, comments: comments,
 		publisher: publisher, continuation: continuation,

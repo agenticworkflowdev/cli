@@ -40,7 +40,7 @@ func resumableAgentSession(manifest state.Manifest, role agentSessionRole, runne
 	return sessionID, nil
 }
 
-func persistAgentSession(transition SpecificationTransitioner, controllerRoot string, manifest state.Manifest, role agentSessionRole, sessionID string, runner agent.Runner) (state.Manifest, error) {
+func persistAgentSession(transition WorkflowTransitioner, controllerRoot string, manifest state.Manifest, role agentSessionRole, sessionID string, runner agent.Runner) (state.Manifest, error) {
 	if sessionID == "" {
 		return manifest, nil
 	}

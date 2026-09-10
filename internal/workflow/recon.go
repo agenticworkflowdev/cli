@@ -12,10 +12,15 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
+// ReconArtifactReader loads controller-owned reconnaissance output.
+type ReconArtifactReader interface {
+	ReadRecon(string, string) ([]byte, error)
+}
+
 // ReconArtifactStore persists and verifies controller-owned reconnaissance output.
 type ReconArtifactStore interface {
+	ReconArtifactReader
 	SaveRecon(string, string, []byte) error
-	ReadRecon(string, string) ([]byte, error)
 }
 
 // ReconResultDecoder validates and decodes the agent's reconnaissance result.
@@ -31,15 +36,15 @@ type ReconnaissanceResult struct {
 	Progress  []agent.ProgressEvent
 }
 
-// ReconnaissanceCreator is the specification phase's reconnaissance boundary.
+// ReconnaissanceCreator is the workflow's standalone reconnaissance boundary.
 type ReconnaissanceCreator interface {
 	Recon(context.Context, string, string) (ReconnaissanceResult, error)
 }
 
 // ReconnaissanceService gathers issue-directed codebase knowledge before specification.
 type ReconnaissanceService struct {
-	reader     SpecificationManifestReader
-	transition SpecificationTransitioner
+	reader     WorkflowManifestReader
+	transition WorkflowTransitioner
 	artifacts  ReconArtifactStore
 	prompt     SpecificationPromptRenderer
 	runner     agent.Runner
@@ -48,10 +53,10 @@ type ReconnaissanceService struct {
 	timeout    time.Duration
 }
 
-// NewReconnaissanceService constructs the recon substep service.
+// NewReconnaissanceService constructs the standalone recon phase service.
 func NewReconnaissanceService(
-	reader SpecificationManifestReader,
-	transition SpecificationTransitioner,
+	reader WorkflowManifestReader,
+	transition WorkflowTransitioner,
 	artifacts ReconArtifactStore,
 	promptRenderer SpecificationPromptRenderer,
 	runner agent.Runner,
@@ -65,7 +70,7 @@ func NewReconnaissanceService(
 	}
 }
 
-// Recon durably enters spec/recon, runs a read-only agent, and persists its
+// Recon durably enters recon/running, runs a read-only agent, and persists its
 // validated Markdown artifact before returning control to specification.
 func (service *ReconnaissanceService) Recon(ctx context.Context, controllerRoot, workflowID string) (ReconnaissanceResult, error) {
 	if err := service.validate(); err != nil {
@@ -79,14 +84,13 @@ func (service *ReconnaissanceService) Recon(ctx context.Context, controllerRoot,
 		return ReconnaissanceResult{}, fmt.Errorf("recon requires init/running state, got %s/%s", current.Phase, current.Status)
 	}
 	running := current
-	running.Phase = state.PhaseSpec
-	running.Substep = state.SubstepRecon
+	running.Phase = state.PhaseRecon
 	running.Status = state.StatusRunning
 	running.SpecificationPath = ""
 	running.Blocker = nil
 	running.LastError = nil
 	if err := service.transition.Transition(controllerRoot, workflowID, running); err != nil {
-		return ReconnaissanceResult{}, fmt.Errorf("persist spec/recon transition: %w", err)
+		return ReconnaissanceResult{}, fmt.Errorf("persist recon/running transition: %w", err)
 	}
 
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, running.Worktree)

@@ -164,7 +164,7 @@ func newWorkflowRuntime(
 	)
 	reportingRecon := &reportingReconnaissanceService{service: reconService, report: progress}
 	specificationService := workflow.NewSpecificationService(
-		manifestStore, transitionService, reportingRecon, specificationPrompt, specificationRunner, resultDecoder,
+		manifestStore, transitionService, manifestStore, specificationPrompt, specificationRunner, resultDecoder,
 		installed.Schemas[assets.SchemaAgentResult].Path, configuration.Agent.Timeout, resumePrompt,
 	)
 	reportingSpecification := &reportingSpecificationService{service: specificationService, report: progress}
@@ -190,7 +190,7 @@ func newWorkflowRuntime(
 	runService := workflow.NewRunService(
 		state.NewFileLocker(), manifestReader, &reportingFetcher{fetcher: githubClient, report: progress},
 		&reportingBootstrapper{bootstrapper: worktreeBootstrapper, report: progress}, manifestStore,
-		state.NewWorkflowID, reportingSpecification, reportingImplementation, reportingReview, blockers,
+		state.NewWorkflowID, reportingRecon, reportingSpecification, reportingImplementation, reportingReview, blockers,
 	).WithFinalizer(publication)
 	resumeService := workflow.NewResumeService(
 		state.NewFileLocker(), manifestReader, transitionService, githubClient, blockers, continuation,

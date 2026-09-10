@@ -54,20 +54,19 @@ func (service *TransitionService) Transition(controllerRoot, workflowID string, 
 }
 
 func allowedManifestTransition(current, next Manifest) bool {
-	if allowedTransition(current.Phase, current.Status, next.Phase, next.Status) {
-		return true
+	if !allowedTransition(current.Phase, current.Status, next.Phase, next.Status) {
+		return false
 	}
-	return current.SkipSpecification && next.SkipSpecification &&
-		current.Phase == PhaseInit && current.Status == StatusRunning &&
-		next.Phase == PhaseImplementation && next.Status == StatusRunning
+	if current.Phase == PhaseRecon && next.Phase == PhaseSpec {
+		return !current.SkipSpecification && !next.SkipSpecification
+	}
+	if current.Phase == PhaseRecon && next.Phase == PhaseImplementation {
+		return current.SkipSpecification && next.SkipSpecification
+	}
+	return true
 }
 
 func validateTransitionData(current, next Manifest) error {
-	if current.Phase == PhaseSpec && next.Phase == PhaseSpec && current.Substep != "" {
-		if next.Substep == "" || current.Substep == SubstepSpecification && next.Substep == SubstepRecon {
-			return errors.New("specification substep cannot move backward or be cleared within the spec phase")
-		}
-	}
 	if err := validateAgentSessionTransition(current, next); err != nil {
 		return err
 	}
@@ -274,12 +273,14 @@ type workflowTransition struct {
 }
 
 var validPhases = map[Phase]bool{
-	PhaseInit: true, PhaseSpec: true, PhaseImplementation: true,
+	PhaseInit: true, PhaseRecon: true, PhaseSpec: true, PhaseImplementation: true,
 	PhaseReview: true, PhasePullRequest: true, PhaseDone: true,
 }
 
 var validConditions = map[workflowCondition]bool{
 	{PhaseInit, StatusRunning}:           true,
+	{PhaseRecon, StatusRunning}:          true,
+	{PhaseRecon, StatusFailed}:           true,
 	{PhaseSpec, StatusRunning}:           true,
 	{PhaseSpec, StatusBlocked}:           true,
 	{PhaseSpec, StatusFailed}:            true,
@@ -296,7 +297,12 @@ var validConditions = map[workflowCondition]bool{
 
 var allowedTransitions = map[workflowTransition]bool{
 	transition(PhaseInit, StatusRunning, PhaseInit, StatusRunning):                     true,
-	transition(PhaseInit, StatusRunning, PhaseSpec, StatusRunning):                     true,
+	transition(PhaseInit, StatusRunning, PhaseRecon, StatusRunning):                    true,
+	transition(PhaseRecon, StatusRunning, PhaseRecon, StatusRunning):                   true,
+	transition(PhaseRecon, StatusRunning, PhaseRecon, StatusFailed):                    true,
+	transition(PhaseRecon, StatusRunning, PhaseSpec, StatusRunning):                    true,
+	transition(PhaseRecon, StatusRunning, PhaseImplementation, StatusRunning):          true,
+	transition(PhaseRecon, StatusFailed, PhaseRecon, StatusFailed):                     true,
 	transition(PhaseSpec, StatusRunning, PhaseSpec, StatusRunning):                     true,
 	transition(PhaseSpec, StatusRunning, PhaseSpec, StatusBlocked):                     true,
 	transition(PhaseSpec, StatusRunning, PhaseSpec, StatusFailed):                      true,

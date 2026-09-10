@@ -34,6 +34,7 @@ type RunResult struct {
 	Worktree       gitrepo.Worktree
 	Existing       state.ExistingWorkflow
 	Manifest       *state.Manifest
+	Recon          *ReconnaissanceResult
 	Specification  *SpecificationResult
 	Implementation *ImplementationResult
 	Review         *ReviewResult
@@ -60,6 +61,7 @@ type RunService struct {
 	bootstrapper   Bootstrapper
 	manifestWriter state.ManifestWriter
 	workflowIDs    func() (string, error)
+	recon          ReconnaissanceCreator
 	specification  SpecificationCreator
 	implementation ImplementationRunner
 	reviewer       Reviewer
@@ -74,10 +76,10 @@ func (service *RunService) WithFinalizer(finalizer Finalizer) *RunService {
 }
 
 // NewRunService constructs the run application service.
-func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), specification SpecificationCreator, implementation ImplementationRunner, reviewer Reviewer, publisher ...BlockerPublisher) *RunService {
+func NewRunService(locker state.Locker, existing state.ExistingReader, github githubapi.Fetcher, bootstrapper Bootstrapper, manifestWriter state.ManifestWriter, workflowIDs func() (string, error), recon ReconnaissanceCreator, specification SpecificationCreator, implementation ImplementationRunner, reviewer Reviewer, publisher ...BlockerPublisher) *RunService {
 	service := &RunService{
 		locker: locker, existing: existing, github: github, bootstrapper: bootstrapper,
-		manifestWriter: manifestWriter, workflowIDs: workflowIDs, specification: specification, implementation: implementation, reviewer: reviewer,
+		manifestWriter: manifestWriter, workflowIDs: workflowIDs, recon: recon, specification: specification, implementation: implementation, reviewer: reviewer,
 	}
 	if len(publisher) > 0 {
 		service.publisher = publisher[0]
@@ -91,7 +93,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if issueNumber <= 0 {
 		return RunResult{}, errors.New("issue number must be positive")
 	}
-	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || (!options.SkipSpecification && service.specification == nil) || service.implementation == nil || service.reviewer == nil {
+	if service.locker == nil || service.existing == nil || service.github == nil || service.bootstrapper == nil || service.manifestWriter == nil || service.workflowIDs == nil || service.recon == nil || (!options.SkipSpecification && service.specification == nil) || service.implementation == nil || service.reviewer == nil {
 		return RunResult{}, errors.New("GitHub run service is not fully configured")
 	}
 	issueKey, err := state.GitHubIssueKey(issueNumber)
@@ -187,25 +189,35 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	if err := service.manifestWriter.Save(controllerRoot, manifest); err != nil {
 		return RunResult{}, fmt.Errorf("persist initial workflow manifest: %w", err)
 	}
+	reconResult, err := service.recon.Recon(ctx, controllerRoot, workflowID)
+	if err != nil {
+		return RunResult{
+			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
+			Manifest: &reconResult.Manifest, Recon: &reconResult,
+		}, err
+	}
 	var specification *SpecificationResult
 	if !options.SkipSpecification {
 		created, createErr := service.specification.Create(ctx, controllerRoot, workflowID)
 		if createErr != nil {
-			return RunResult{}, createErr
+			return RunResult{
+				WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
+				Manifest: &created.Manifest, Recon: &reconResult, Specification: &created,
+			}, createErr
 		}
 		specification = &created
 		if created.Blocker != nil {
 			published, publishErr := service.publishBlocker(ctx, controllerRoot, workflowID, created.Blocker)
 			created.Manifest = published
 			specification = &created
-			return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &created.Manifest, Specification: specification}, publishErr
+			return RunResult{WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree, Manifest: &created.Manifest, Recon: &reconResult, Specification: specification}, publishErr
 		}
 	}
 	implementation, err := service.implementation.Implement(ctx, controllerRoot, workflowID)
 	if err != nil {
 		return RunResult{
 			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-			Manifest: &implementation.Manifest, Specification: specification, Implementation: &implementation,
+			Manifest: &implementation.Manifest, Recon: &reconResult, Specification: specification, Implementation: &implementation,
 		}, err
 	}
 	if implementation.Blocker != nil {
@@ -213,7 +225,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 		implementation.Manifest = published
 		return RunResult{
 			WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-			Manifest: &implementation.Manifest, Specification: specification, Implementation: &implementation,
+			Manifest: &implementation.Manifest, Recon: &reconResult, Specification: specification, Implementation: &implementation,
 		}, publishErr
 	}
 	reviewResult, err := service.reviewer.Review(ctx, controllerRoot, workflowID, implementation.CheckResults, implementation.CheckedState)
@@ -224,7 +236,7 @@ func (service *RunService) RunGitHub(ctx context.Context, controllerRoot string,
 	}
 	result = RunResult{
 		WorkflowID: workflowID, Outcome: RunReady, Snapshot: snapshot, Worktree: worktree,
-		Manifest: &reviewResult.Manifest, Specification: specification, Implementation: &implementation, Review: &reviewResult,
+		Manifest: &reviewResult.Manifest, Recon: &reconResult, Specification: specification, Implementation: &implementation, Review: &reviewResult,
 	}
 	if err != nil || reviewResult.Blocker != nil || service.finalizer == nil {
 		return result, err

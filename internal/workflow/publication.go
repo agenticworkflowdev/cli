@@ -81,8 +81,8 @@ type PublicationRetrier interface {
 // PublicationService owns final checks, Git publication, PR reconciliation,
 // and the single durable done transition.
 type PublicationService struct {
-	reader      SpecificationManifestReader
-	transition  SpecificationTransitioner
+	reader      WorkflowManifestReader
+	transition  WorkflowTransitioner
 	reviews     ReviewEvidenceReader
 	checks      checks.Runner
 	worktree    gitrepo.WorktreeStateInspector
@@ -92,8 +92,8 @@ type PublicationService struct {
 }
 
 func NewPublicationService(
-	reader SpecificationManifestReader,
-	transition SpecificationTransitioner,
+	reader WorkflowManifestReader,
+	transition WorkflowTransitioner,
 	reviews ReviewEvidenceReader,
 	checkRunner checks.Runner,
 	worktree gitrepo.WorktreeStateInspector,

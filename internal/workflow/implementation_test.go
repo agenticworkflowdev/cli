@@ -20,7 +20,6 @@ import (
 func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)
-	manifest.Substep = state.SubstepSpecification
 	stateStore := &implementationState{manifest: manifest, events: &events}
 	implementPrompt := &implementationPrompt{label: "implement", rendered: "implementation prompt", events: &events}
 	repairPrompt := &implementationPrompt{label: "repair", rendered: "repair prompt", events: &events}
@@ -40,7 +39,7 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
-	if result.Manifest.Phase != state.PhaseImplementation || result.Manifest.Substep != "" || result.Manifest.Status != state.StatusRunning || !reflect.DeepEqual(result.CheckResults, checkResults) {
+	if result.Manifest.Phase != state.PhaseImplementation || result.Manifest.Status != state.StatusRunning || !reflect.DeepEqual(result.CheckResults, checkResults) {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.Blocker != nil || !reflect.DeepEqual(result.SessionIDs, []string{"thread-1"}) {
@@ -68,7 +67,7 @@ func TestImplementationPersistsRunningBeforeAgentAndReturnsPassingEvidence(t *te
 func TestImplementationStartsFromIssueRequirementsWhenSpecificationWasSkipped(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)
-	manifest.Phase = state.PhaseInit
+	manifest.Phase = state.PhaseRecon
 	manifest.SkipSpecification = true
 	manifest.SpecificationPath = ""
 	stateStore := &implementationState{manifest: manifest, events: &events}
@@ -91,6 +90,9 @@ func TestImplementationStartsFromIssueRequirementsWhenSpecificationWasSkipped(t 
 	}
 	if implementPrompt.data.Issue.Body != manifest.Issue.Body {
 		t.Fatalf("prompt issue body = %q, want %q", implementPrompt.data.Issue.Body, manifest.Issue.Body)
+	}
+	if implementPrompt.data.Recon != "# Recon\n\n## Relevant code\n\n- internal/workflow/implementation.go\n" {
+		t.Fatalf("prompt recon = %q", implementPrompt.data.Recon)
 	}
 }
 
@@ -423,6 +425,11 @@ type implementationState struct {
 	manifest      state.Manifest
 	events        *[]string
 	transitionErr error
+}
+
+func (store *implementationState) ReadRecon(_ string, _ string) ([]byte, error) {
+	*store.events = append(*store.events, "read:recon")
+	return []byte("# Recon\n\n## Relevant code\n\n- internal/workflow/implementation.go\n"), nil
 }
 
 func (store *implementationState) Read(_ string, _ string) (state.Manifest, error) {

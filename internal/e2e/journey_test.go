@@ -270,14 +270,17 @@ func skipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T, provider
 	if !strings.Contains(output, "Pull request created: https://github.com/owner/repo/pull/77") {
 		t.Fatalf("run output = %q", output)
 	}
-	if strings.Contains(output, "Recon agent") || strings.Contains(output, "Recon complete") || strings.Contains(output, "Specification agent") || strings.Contains(output, "Specification complete") {
+	if !strings.Contains(output, "Recon agent") || !strings.Contains(output, "Recon complete") {
+		t.Fatalf("skip-spec run did not report reconnaissance progress: %q", output)
+	}
+	if strings.Contains(output, "Specification agent") || strings.Contains(output, "Specification complete") {
 		t.Fatalf("skip-spec run reported specification progress: %q", output)
 	}
 
 	events := fixture.trace(t)
 	wantTrace := []string{
 		"gh:repo", "gh:actor", "gh:issue", "git:worktree-add", "git:worktree-validate",
-		"codex:implementation", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create",
+		"codex:recon", "codex:implementation", "check", "codex:review", "check", "git:commit", "git:push", "gh:pr-list", "gh:pr-create",
 	}
 	wantTrace = retargetTrace(wantTrace, provider.tool)
 	if got := journeyTrace(events); !equalTrace(got, wantTrace) {
@@ -291,6 +294,9 @@ func skipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T, provider
 		}
 		if strings.HasPrefix(event.Stdin, "Implement the persisted issue description directly") {
 			implementationPromptFound = true
+			if !strings.Contains(event.Stdin, "BEGIN UNTRUSTED RECON DATA") || !strings.Contains(event.Stdin, "# Recon") {
+				t.Fatalf("skip-spec implementation prompt does not contain persisted recon: %q", event.Stdin)
+			}
 		}
 		if strings.HasPrefix(event.Stdin, "Review the current worktree against the persisted issue description") {
 			reviewPromptFound = true

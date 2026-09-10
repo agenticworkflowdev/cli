@@ -215,10 +215,9 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 		{name: "worktree and branch mismatch", edit: func(value *state.Manifest) { value.Branch = "gh-17-other-title" }, want: "must match"},
 		{name: "spec path", edit: func(value *state.Manifest) { value.SpecificationPath = "../escape.md" }, want: "specification"},
 		{name: "recon with spec path", edit: func(value *state.Manifest) {
-			value.Phase = state.PhaseSpec
-			value.Substep = state.SubstepRecon
+			value.Phase = state.PhaseRecon
 			value.SpecificationPath = ".awdev/specs/" + value.Branch + ".md"
-		}, want: "recon substep"},
+		}, want: "recon phase"},
 		{name: "base sha", edit: func(value *state.Manifest) { value.BaseSHA = "abc" }, want: "base SHA"},
 		{name: "phase", edit: func(value *state.Manifest) { value.Phase = "unknown" }, want: "phase"},
 		{name: "status", edit: func(value *state.Manifest) { value.Status = "unknown" }, want: "status"},
@@ -239,10 +238,9 @@ func TestManifestValidationRejectsInvalidFieldsAndCombinations(t *testing.T) {
 			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
 		}, want: "specification agent session"},
 		{name: "spec session during recon", edit: func(value *state.Manifest) {
-			value.Phase = state.PhaseSpec
-			value.Substep = state.SubstepRecon
+			value.Phase = state.PhaseRecon
 			value.AgentSessions = &state.AgentSessions{Provider: "codex", Specification: "spec-session"}
-		}, want: "during recon"},
+		}, want: "before the specification phase"},
 		{name: "implementation session before implementation", edit: func(value *state.Manifest) {
 			value.Phase = state.PhaseSpec
 			value.AgentSessions = &state.AgentSessions{Provider: "codex", Implementation: "implementation-session"}
@@ -275,6 +273,8 @@ func TestManifestValidationAcceptsEverySupportedPhaseStatusCombination(t *testin
 		status state.Status
 	}{
 		{state.PhaseInit, state.StatusRunning},
+		{state.PhaseRecon, state.StatusRunning},
+		{state.PhaseRecon, state.StatusFailed},
 		{state.PhaseSpec, state.StatusRunning},
 		{state.PhaseSpec, state.StatusBlocked},
 		{state.PhaseSpec, state.StatusFailed},
@@ -314,31 +314,58 @@ func TestManifestValidationAcceptsEverySupportedPhaseStatusCombination(t *testin
 	}
 }
 
-func TestManifestValidationScopesReconSubstepToSpecPhase(t *testing.T) {
+func TestManifestValidationAcceptsReconAsAStandalonePhase(t *testing.T) {
 	root := t.TempDir()
 
 	recon := validManifest(root)
-	recon.Phase = state.PhaseSpec
-	recon.Substep = state.SubstepRecon
+	recon.Phase = state.PhaseRecon
 	if err := recon.Validate(); err != nil {
-		t.Fatalf("spec/recon manifest was rejected: %v", err)
+		t.Fatalf("recon manifest was rejected: %v", err)
 	}
+}
 
+func TestStoreMigratesLegacySpecificationSubsteps(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		phase   state.Phase
-		substep state.Substep
+		name      string
+		substep   state.Substep
+		wantPhase state.Phase
 	}{
-		{name: "recon outside spec", phase: state.PhaseImplementation, substep: state.SubstepRecon},
-		{name: "specification outside spec", phase: state.PhaseImplementation, substep: state.SubstepSpecification},
-		{name: "unknown spec substep", phase: state.PhaseSpec, substep: "unknown"},
+		{name: "recon", substep: state.SubstepRecon, wantPhase: state.PhaseRecon},
+		{name: "specification", substep: state.SubstepSpecification, wantPhase: state.PhaseSpec},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
 			manifest := validManifest(root)
-			manifest.Phase = test.phase
+			store := state.NewStore()
+			if err := store.Save(root, manifest); err != nil {
+				t.Fatalf("save initial manifest: %v", err)
+			}
+			manifest.Phase = state.PhaseSpec
 			manifest.Substep = test.substep
-			if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "substep") {
-				t.Fatalf("Validate() error = %v, want substep error", err)
+			contents, err := json.MarshalIndent(manifest, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestPath, err := state.ManifestPath(root, manifest.WorkflowID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(manifestPath, append(contents, '\n'), 0o644); err != nil {
+				t.Fatalf("write raw legacy manifest: %v", err)
+			}
+			got, err := store.Read(root, manifest.WorkflowID)
+			if err != nil {
+				t.Fatalf("read migrated manifest: %v", err)
+			}
+			if got.Phase != test.wantPhase || got.Substep != "" {
+				t.Fatalf("migrated manifest = %#v", got)
+			}
+			persisted, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(persisted), `"substep"`) || !strings.Contains(string(persisted), `"phase": "`+string(test.wantPhase)+`"`) {
+				t.Fatalf("legacy manifest was not rewritten: %s", persisted)
 			}
 		})
 	}

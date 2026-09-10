@@ -81,11 +81,19 @@ type ImplementationRunner interface {
 	Implement(context.Context, string, string) (ImplementationResult, error)
 }
 
+// ImplementationRequirementsReader loads both workflow state and the
+// reconnaissance artifact required when specification is skipped.
+type ImplementationRequirementsReader interface {
+	WorkflowManifestReader
+	ReconArtifactReader
+}
+
 // ImplementationService orchestrates implementation, deterministic checks,
 // and a fixed bounded check-repair loop.
 type ImplementationService struct {
-	reader          SpecificationManifestReader
-	transition      SpecificationTransitioner
+	reader          WorkflowManifestReader
+	transition      WorkflowTransitioner
+	recon           ReconArtifactReader
 	implementPrompt SpecificationPromptRenderer
 	repairPrompt    SpecificationPromptRenderer
 	resumePrompt    SpecificationPromptRenderer
@@ -103,8 +111,8 @@ type ImplementationService struct {
 
 // NewImplementationService constructs the implementation phase service.
 func NewImplementationService(
-	reader SpecificationManifestReader,
-	transition SpecificationTransitioner,
+	reader ImplementationRequirementsReader,
+	transition WorkflowTransitioner,
 	implementPrompt SpecificationPromptRenderer,
 	repairPrompt SpecificationPromptRenderer,
 	runner agent.Runner,
@@ -119,7 +127,7 @@ func NewImplementationService(
 	resumePrompt ...SpecificationPromptRenderer,
 ) *ImplementationService {
 	service := &ImplementationService{
-		reader: reader, transition: transition, implementPrompt: implementPrompt, repairPrompt: repairPrompt,
+		reader: reader, transition: transition, recon: reader, implementPrompt: implementPrompt, repairPrompt: repairPrompt,
 		runner: runner, decoder: decoder, checks: checkRunner, diff: diff, worktree: worktree, schemaPath: schemaPath, timeout: timeout,
 		definitions: append([]checks.Definition(nil), definitions...), protectedPaths: append([]string(nil), protectedPaths...),
 		maxCheckRepairs: defaultMaxCheckRepairs,
@@ -150,20 +158,27 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 		return ImplementationResult{}, fmt.Errorf("read persisted workflow for implementation: %w", err)
 	}
 	readyWithSpecification := !current.SkipSpecification && current.Phase == state.PhaseSpec && current.SpecificationPath != ""
-	readyWithoutSpecification := current.SkipSpecification && current.Phase == state.PhaseInit && current.SpecificationPath == ""
+	readyWithoutSpecification := current.SkipSpecification && current.Phase == state.PhaseRecon && current.SpecificationPath == ""
 	if current.Status != state.StatusRunning || (!readyWithSpecification && !readyWithoutSpecification) {
-		return ImplementationResult{}, fmt.Errorf("implementation requires completed spec/running state or init/running with specification skipped, got %s/%s", current.Phase, current.Status)
+		return ImplementationResult{}, fmt.Errorf("implementation requires completed spec/running state or recon/running with specification skipped, got %s/%s", current.Phase, current.Status)
+	}
+	recon := ""
+	if current.SkipSpecification {
+		contents, readErr := service.recon.ReadRecon(controllerRoot, workflowID)
+		if readErr != nil {
+			return service.fail(controllerRoot, current, ImplementationResult{Manifest: current}, fmt.Errorf("read persisted recon for implementation: %w", readErr))
+		}
+		recon = string(contents)
 	}
 	running := current
 	running.Phase = state.PhaseImplementation
-	running.Substep = ""
 	running.Status = state.StatusRunning
 	running.Blocker = nil
 	running.LastError = nil
 	if err := service.transition.Transition(controllerRoot, workflowID, running); err != nil {
 		return ImplementationResult{}, fmt.Errorf("persist implementation/running transition: %w", err)
 	}
-	return service.run(ctx, controllerRoot, running, service.implementPrompt)
+	return service.run(ctx, controllerRoot, running, service.implementPrompt, recon)
 }
 
 // Resume continues implementation in its prior provider session, then repeats
@@ -183,11 +198,11 @@ func (service *ImplementationService) Resume(ctx context.Context, controllerRoot
 	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || !hasRequirements(current) || current.Blocker == nil || current.Blocker.Answer == nil {
 		return ImplementationResult{}, fmt.Errorf("implementation resume requires answered implementation/running state, got %s/%s", current.Phase, current.Status)
 	}
-	return service.run(ctx, controllerRoot, current, service.resumePrompt)
+	return service.run(ctx, controllerRoot, current, service.resumePrompt, "")
 }
 
 func (service *ImplementationService) validate() error {
-	if service == nil || service.reader == nil || service.transition == nil || service.implementPrompt == nil || service.repairPrompt == nil || service.runner == nil || service.decoder == nil || service.checks == nil || service.diff == nil || service.worktree == nil {
+	if service == nil || service.reader == nil || service.transition == nil || service.recon == nil || service.implementPrompt == nil || service.repairPrompt == nil || service.runner == nil || service.decoder == nil || service.checks == nil || service.diff == nil || service.worktree == nil {
 		return errors.New("implementation service is not fully configured")
 	}
 	if service.timeout <= 0 {
@@ -202,7 +217,7 @@ func (service *ImplementationService) validate() error {
 	return nil
 }
 
-func (service *ImplementationService) run(ctx context.Context, controllerRoot string, running state.Manifest, renderer SpecificationPromptRenderer) (ImplementationResult, error) {
+func (service *ImplementationService) run(ctx context.Context, controllerRoot string, running state.Manifest, renderer SpecificationPromptRenderer, recon string) (ImplementationResult, error) {
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, running.Worktree)
 	if err != nil {
 		return ImplementationResult{}, fmt.Errorf("resolve implementation worktree: %w", err)
@@ -212,7 +227,7 @@ func (service *ImplementationService) run(ctx context.Context, controllerRoot st
 	if err != nil {
 		return service.fail(controllerRoot, running, ImplementationResult{Manifest: running}, fmt.Errorf("derive implementation agent output directory: %w", err))
 	}
-	basePromptData := promptData(running, running.SpecificationPath, "")
+	basePromptData := promptData(running, running.SpecificationPath, recon)
 	result := ImplementationResult{Manifest: running}
 	resumeSessionID, err := resumableAgentSession(running, implementationSessionRole, service.runner)
 	if err != nil {

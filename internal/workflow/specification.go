@@ -14,13 +14,13 @@ import (
 	"github.com/agenticworkflowdev/cli/internal/state"
 )
 
-// SpecificationManifestReader loads the durable workflow snapshot.
-type SpecificationManifestReader interface {
+// WorkflowManifestReader loads the durable workflow snapshot.
+type WorkflowManifestReader interface {
 	Read(string, string) (state.Manifest, error)
 }
 
-// SpecificationTransitioner persists validated workflow transitions.
-type SpecificationTransitioner interface {
+// WorkflowTransitioner persists validated workflow transitions.
+type WorkflowTransitioner interface {
 	Transition(string, string, state.Manifest) error
 }
 
@@ -55,9 +55,9 @@ type SpecificationCreator interface {
 
 // SpecificationService creates and verifies one workflow specification.
 type SpecificationService struct {
-	reader       SpecificationManifestReader
-	transition   SpecificationTransitioner
-	recon        ReconnaissanceCreator
+	reader       WorkflowManifestReader
+	transition   WorkflowTransitioner
+	recon        ReconArtifactReader
 	prompt       SpecificationPromptRenderer
 	resumePrompt SpecificationPromptRenderer
 	runner       agent.Runner
@@ -67,7 +67,7 @@ type SpecificationService struct {
 }
 
 // NewSpecificationService constructs the specification phase service.
-func NewSpecificationService(reader SpecificationManifestReader, transition SpecificationTransitioner, recon ReconnaissanceCreator, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration, resumePrompt ...SpecificationPromptRenderer) *SpecificationService {
+func NewSpecificationService(reader WorkflowManifestReader, transition WorkflowTransitioner, recon ReconArtifactReader, promptRenderer SpecificationPromptRenderer, runner agent.Runner, decoder SpecificationResultDecoder, schemaPath string, timeout time.Duration, resumePrompt ...SpecificationPromptRenderer) *SpecificationService {
 	service := &SpecificationService{
 		reader: reader, transition: transition, recon: recon, prompt: promptRenderer,
 		runner: runner, decoder: decoder, schemaPath: schemaPath, timeout: timeout,
@@ -86,15 +86,19 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 		return SpecificationResult{}, err
 	}
 
-	reconResult, err := service.recon.Recon(ctx, controllerRoot, workflowID)
+	current, err := service.reader.Read(controllerRoot, workflowID)
 	if err != nil {
-		return SpecificationResult{Manifest: reconResult.Manifest, Progress: reconResult.Progress}, err
+		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification: %w", err)
 	}
-	if reconResult.Manifest.Phase != state.PhaseSpec || reconResult.Manifest.Substep != state.SubstepRecon || reconResult.Manifest.Status != state.StatusRunning {
-		return SpecificationResult{Manifest: reconResult.Manifest}, errors.New("recon did not complete in spec/recon running state")
+	if current.Phase != state.PhaseRecon || current.Status != state.StatusRunning || current.SkipSpecification {
+		return SpecificationResult{Manifest: current}, fmt.Errorf("specification requires completed recon/running state, got %s/%s", current.Phase, current.Status)
 	}
-	running := reconResult.Manifest
-	running.Substep = state.SubstepSpecification
+	recon, err := service.recon.ReadRecon(controllerRoot, workflowID)
+	if err != nil {
+		return service.fail(controllerRoot, current, fmt.Errorf("read persisted recon for specification: %w", err))
+	}
+	running := current
+	running.Phase = state.PhaseSpec
 	running.Status = state.StatusRunning
 	running.SpecificationPath = ""
 	running.Blocker = nil
@@ -103,9 +107,7 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 		return SpecificationResult{}, fmt.Errorf("persist spec/specification transition: %w", err)
 	}
 
-	result, err := service.run(ctx, controllerRoot, running, service.prompt, reconResult.Recon)
-	result.Progress = append(append([]agent.ProgressEvent(nil), reconResult.Progress...), result.Progress...)
-	return result, err
+	return service.run(ctx, controllerRoot, running, service.prompt, string(recon))
 }
 
 // Resume continues specification in its prior provider session using the
@@ -122,10 +124,14 @@ func (service *SpecificationService) Resume(ctx context.Context, controllerRoot,
 	if err != nil {
 		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification resume: %w", err)
 	}
-	if current.Phase != state.PhaseSpec || current.Substep == state.SubstepRecon || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
+	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
 		return SpecificationResult{}, fmt.Errorf("specification resume requires answered spec/running state, got %s/%s", current.Phase, current.Status)
 	}
-	return service.run(ctx, controllerRoot, current, service.resumePrompt, "")
+	recon, err := service.recon.ReadRecon(controllerRoot, workflowID)
+	if err != nil {
+		return service.fail(controllerRoot, current, fmt.Errorf("read persisted recon for specification resume: %w", err))
+	}
+	return service.run(ctx, controllerRoot, current, service.resumePrompt, string(recon))
 }
 
 func (service *SpecificationService) validate() error {

@@ -84,8 +84,16 @@ func TestDefaultReconPromptIsIssueDirectedAndToolAgnostic(t *testing.T) {
 		"Stop once",
 		"# Recon",
 		`"recon"`,
+		"wf_0123456789abcdef0123456789abcdef",
+		"owner/repository",
+		"gh-17-a-title",
+		strings.Repeat("a", 40),
 		"/repo/.awdev/worktrees/gh-17-a-title",
+		".awdev/issues/wf_0123456789abcdef0123456789abcdef/recon.md",
+		"Issue number: 17",
+		"https://github.com/owner/repository/issues/17",
 		"Add recon {{.WorkflowID}}",
+		"Prefer a map when available.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered recon prompt does not contain %q:\n%s", want, got)
@@ -116,6 +124,35 @@ func TestDefaultSpecificationPromptReceivesReconAsUntrustedStartingContext(t *te
 	for _, want := range []string{"BEGIN UNTRUSTED RECON DATA", recon, "END UNTRUSTED RECON DATA"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("specification prompt does not contain %q", want)
+		}
+	}
+}
+
+func TestDefaultImplementationPromptReceivesReconWhenSpecificationIsSkipped(t *testing.T) {
+	contents, err := fs.ReadFile(assets.Defaults(), "prompts/implement.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := prompt.NewRenderer("implement", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recon := "# Recon\n\n## Relevant code\n\n- internal/workflow/implementation.go\n"
+	got, err := renderer.Render(prompt.PromptData{
+		WorkflowID:        "wf_0123456789abcdef0123456789abcdef",
+		Repository:        "owner/repository",
+		Branch:            "gh-17-a-title",
+		BaseSHA:           strings.Repeat("a", 40),
+		SkipSpecification: true,
+		Recon:             recon,
+		Issue:             prompt.IssueData{Number: 17, Title: "Add recon", Body: "Body", URL: "https://github.com/owner/repository/issues/17"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Implement the persisted issue description directly", "BEGIN UNTRUSTED RECON DATA", recon, "END UNTRUSTED RECON DATA"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("implementation prompt does not contain %q", want)
 		}
 	}
 }

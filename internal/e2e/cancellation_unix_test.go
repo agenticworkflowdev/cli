@@ -56,7 +56,7 @@ func interruptTerminatesFakeAgentProcessTree(t *testing.T, provider agentProvide
 		t.Fatal("interrupted awdev unexpectedly succeeded")
 	}
 	status := fixture.status(t)
-	if status.Phase != "spec" || status.Status != "failed" || status.LastError == "" {
+	if status.Phase != "recon" || status.Status != "failed" || status.LastError == "" {
 		t.Fatalf("cancelled JSON status = %#v", status)
 	}
 
