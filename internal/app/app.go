@@ -39,6 +39,7 @@ func NewCommand() *cobra.Command {
 	manifestStore := state.NewStore()
 	manifestReader := state.NewManifestReader()
 	statusService := workflow.NewStatusService(manifestReader, githubClient)
+	pruneService := workflow.NewPruneService(state.NewFileLocker(), manifestReader, worktreeManager, manifestStore)
 	buildRuntime := func(controllerRoot string, progress cli.ProgressReporter) (workflowRuntime, error) {
 		return newWorkflowRuntime(controllerRoot, progress, processRunner, githubClient, worktreeBootstrapper, manifestStore, manifestReader)
 	}
@@ -77,6 +78,7 @@ func NewCommand() *cobra.Command {
 			return runtime.retry.RetryGitHub(ctx, controllerRoot, issueNumber)
 		},
 		StatusGitHub: statusService.StatusGitHub,
+		PruneGitHub:  pruneService.PruneGitHub,
 		Execute: func(_ context.Context, operation cli.Operation, item cli.SourceItem, _ string) error {
 			return fmt.Errorf("awdev %s %s is not implemented yet", operation, item.Source)
 		},

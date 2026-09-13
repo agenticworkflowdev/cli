@@ -254,6 +254,94 @@ func TestHappyAndCorrectionJourneysAsBuilt(t *testing.T) {
 	}
 }
 
+func TestPruneRemovesWorkflowArtifactsAsBuilt(t *testing.T) {
+	fixture := newFixture(t, scenarioHappy)
+	fixture.initialize(t)
+	fixture.run(t, "run", "github", "123")
+	status := fixture.status(t)
+
+	artifactName := "gh-123-add-argv-safe-journey"
+	workflowDirectory := filepath.Join(fixture.root, ".awdev", "issues", status.WorkflowID)
+	worktree := filepath.Join(fixture.root, ".awdev", "worktrees", artifactName)
+	for _, path := range []string{workflowDirectory, worktree} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected workflow artifact %s before prune: %v", path, err)
+		}
+	}
+
+	output := fixture.run(t, "prune", "github", "123")
+	if want := "Pruned workflow " + status.WorkflowID + ".\n"; output != want {
+		t.Fatalf("prune output = %q, want %q", output, want)
+	}
+	for _, path := range []string{workflowDirectory, worktree} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("workflow artifact %s remains after prune: %v", path, err)
+		}
+	}
+
+	branchCommand := exec.Command("git", "branch", "--list", artifactName)
+	branchCommand.Dir = fixture.root
+	branchOutput, err := branchCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list workflow branch: %v: %s", err, branchOutput)
+	}
+	if strings.TrimSpace(string(branchOutput)) != "" {
+		t.Fatalf("workflow branch remains after prune: %s", branchOutput)
+	}
+	remoteCommand := exec.Command("git", "ls-remote", "--heads", "origin", artifactName)
+	remoteCommand.Dir = fixture.root
+	remoteOutput, err := remoteCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list remote workflow branch: %v: %s", err, remoteOutput)
+	}
+	if !strings.Contains(string(remoteOutput), "refs/heads/"+artifactName) {
+		t.Fatalf("remote workflow branch was deleted by prune: %s", remoteOutput)
+	}
+}
+
+func TestPrunePreservesWorkflowStateWhenGitCleanupFails(t *testing.T) {
+	fixture := newFixture(t, scenarioHappy)
+	fixture.initialize(t)
+	fixture.run(t, "run", "github", "123")
+	status := fixture.status(t)
+
+	artifactName := "gh-123-add-argv-safe-journey"
+	workflowDirectory := filepath.Join(fixture.root, ".awdev", "issues", status.WorkflowID)
+	worktree := filepath.Join(fixture.root, ".awdev", "worktrees", artifactName)
+	branchLock := filepath.Join(fixture.root, ".git", "refs", "heads", artifactName+".lock")
+	if err := os.WriteFile(branchLock, []byte("block branch deletion\n"), 0o600); err != nil {
+		t.Fatalf("create branch lock: %v", err)
+	}
+
+	output := fixture.runExpectError(t, "prune", "github", "123")
+	if !strings.Contains(output, "delete workflow branch") {
+		t.Fatalf("prune failure output = %q, want branch deletion error", output)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("workflow worktree remains after successful worktree removal: %v", err)
+	}
+	if _, err := os.Stat(workflowDirectory); err != nil {
+		t.Fatalf("workflow state was not preserved after Git cleanup failure: %v", err)
+	}
+
+	if err := os.Remove(branchLock); err != nil {
+		t.Fatalf("remove branch lock: %v", err)
+	}
+	fixture.run(t, "prune", "github", "123")
+	if _, err := os.Stat(workflowDirectory); !os.IsNotExist(err) {
+		t.Fatalf("workflow state remains after retry: %v", err)
+	}
+	branchCommand := exec.Command("git", "branch", "--list", artifactName)
+	branchCommand.Dir = fixture.root
+	branchOutput, err := branchCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list workflow branch: %v: %s", err, branchOutput)
+	}
+	if strings.TrimSpace(string(branchOutput)) != "" {
+		t.Fatalf("workflow branch remains after retry: %s", branchOutput)
+	}
+}
+
 func TestSkipSpecificationJourneyUsesIssueDescriptionDirectly(t *testing.T) {
 	for _, provider := range allProviders {
 		t.Run(provider.config, func(t *testing.T) {

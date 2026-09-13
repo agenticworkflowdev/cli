@@ -47,6 +47,7 @@ Run an issue and inspect its stable machine-readable status:
 awdev run github 123
 awdev status github 123
 awdev status github 123 --json
+awdev prune github 123
 ```
 
 Reconnaissance is a top-level phase between `init` and `spec`. It always runs,
@@ -81,6 +82,19 @@ use the deliberately narrow retry command:
 ```sh
 awdev retry github 123
 ```
+
+When a workflow is no longer needed, remove its controller-owned artifacts:
+
+```sh
+awdev prune github 123
+```
+
+`prune` removes the workflow worktree first, deletes its local branch second,
+and deletes the durable workflow directory last. If Git cleanup fails, the
+workflow record is retained so the failure can be diagnosed and the command
+can be retried. The command permanently discards uncommitted changes in the
+workflow worktree; it does not delete the issue, pull request, remote branch,
+or diagnostic logs.
 
 The process owns the workflow lock while it runs. Pressing Ctrl-C cancels the
 active child process tree. AWDev does not continue in a daemon after the
@@ -158,8 +172,9 @@ contract.
 After durable state exists, technical failures are recorded with the current
 phase, `status: failed`, and `last_error`. Human questions use `status:
 blocked`. State, worktrees, and diagnostics are preserved. Only
-`pull_request/failed` supports `retry`; see [manual recovery](docs/manual-recovery.md)
-for phase-specific guidance.
+`pull_request/failed` supports `retry`; use `awdev prune github 123` when you
+intentionally want to discard a workflow's local state and Git artifacts. See
+[manual recovery](docs/manual-recovery.md) for phase-specific guidance.
 
 ## Current boundaries
 
@@ -168,4 +183,5 @@ implemented agents, selected at `awdev init`. The source-aware command grammar
 reserves `linear` for a future source, but Linear operations are unavailable.
 
 This MVP creates one pull request. It does not wait for hosted CI, merge pull
-requests, clean up worktrees, run hosted workflows, or expose an MCP service.
+requests, automatically clean up completed workflows, run hosted workflows, or
+expose an MCP service.

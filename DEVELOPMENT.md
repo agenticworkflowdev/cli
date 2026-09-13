@@ -68,6 +68,7 @@ go run ./cmd/awdev run github 123
 go run ./cmd/awdev status github 123 --json
 go run ./cmd/awdev resume github 123
 go run ./cmd/awdev retry github 123
+go run ./cmd/awdev prune github 123
 ```
 
 End-to-end development requires a non-shallow Git checkout with an `origin`

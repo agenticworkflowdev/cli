@@ -387,6 +387,7 @@ func TestSourceCommandsValidateArgumentsBeforeServices(t *testing.T) {
 		{name: "legacy run number", args: []string{"run", "17"}, wantErr: "requires a source and issue number"},
 		{name: "legacy status number", args: []string{"status", "17"}, wantErr: "requires a source and issue number"},
 		{name: "legacy resume number", args: []string{"resume", "17"}, wantErr: "requires a source and issue number"},
+		{name: "legacy prune number", args: []string{"prune", "17"}, wantErr: "requires a source and issue number"},
 		{name: "missing number", args: []string{"resume", "github"}, wantErr: "requires a source and issue number"},
 		{name: "unsupported source", args: []string{"retry", "jira", "17"}, wantErr: "unsupported source \"jira\""},
 		{name: "linear", args: []string{"run", "linear", "17"}, wantErr: "Linear is not implemented yet."},
@@ -510,10 +511,33 @@ func TestInvalidConfigStopsBeforeOperation(t *testing.T) {
 	}
 }
 
-func TestWorkerGuardAppliesOnlyToRunAndResume(t *testing.T) {
+func TestPruneDoesNotRequireValidConfig(t *testing.T) {
+	pruned := false
+	services := cli.Services{
+		WorkingDirectory: func() (string, error) { return "/repo", nil },
+		DiscoverRoot:     func(context.Context, string) (string, error) { return "/repo", nil },
+		ValidateConfig:   func(string) error { return errors.New("invalid config") },
+		PruneGitHub: func(_ context.Context, root string, issueNumber int) (workflow.PruneResult, error) {
+			pruned = root == "/repo" && issueNumber == 17
+			return workflow.PruneResult{WorkflowID: cliTestWorkflowID}, nil
+		},
+	}
+	command := cli.NewRootCommand(services)
+	command.SetOut(new(bytes.Buffer))
+	command.SetArgs([]string{"prune", "github", "17"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("prune command: %v", err)
+	}
+	if !pruned {
+		t.Fatal("prune service was not called without configuration validation")
+	}
+}
+
+func TestWorkerGuardAppliesToMutatingWorkflowCommands(t *testing.T) {
 	t.Setenv("AWDEV_WORKER", "1")
 
-	for _, operation := range []string{"run", "resume"} {
+	for _, operation := range []string{"run", "resume", "retry", "prune"} {
 		t.Run(operation, func(t *testing.T) {
 			called := false
 			services := cli.Services{WorkingDirectory: func() (string, error) { called = true; return "", nil }}

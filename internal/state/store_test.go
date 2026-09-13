@@ -318,6 +318,9 @@ func (filesystem *faultFileSystem) Rename(oldPath, newPath string) error {
 }
 
 func (filesystem *faultFileSystem) Remove(path string) error { return filesystem.base.Remove(path) }
+func (filesystem *faultFileSystem) RemoveAll(path string) error {
+	return filesystem.base.RemoveAll(path)
+}
 
 func (filesystem *faultFileSystem) OpenDirectory(path string) (state.SyncDirectory, error) {
 	directory, err := filesystem.base.OpenDirectory(path)

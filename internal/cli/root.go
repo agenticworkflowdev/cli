@@ -19,6 +19,7 @@ const (
 	OperationStatus Operation = "status"
 	OperationResume Operation = "resume"
 	OperationRetry  Operation = "retry"
+	OperationPrune  Operation = "prune"
 )
 
 // Source identifies an issue provider reserved by the command grammar.
@@ -58,6 +59,7 @@ type Services struct {
 	ResumeGitHub           func(context.Context, string, int, ProgressReporter) (workflow.ResumeResult, error)
 	RetryGitHub            func(context.Context, string, int, ProgressReporter) (workflow.PublicationResult, error)
 	StatusGitHub           func(context.Context, string, int, workflow.StatusOptions) (workflow.StatusResult, error)
+	PruneGitHub            func(context.Context, string, int) (workflow.PruneResult, error)
 	Execute                func(context.Context, Operation, SourceItem, string) error
 	Getenv                 func(string) string
 }
@@ -80,7 +82,7 @@ func NewRootCommand(services Services) *cobra.Command {
 		},
 	}
 	command.AddCommand(newInitCommand(services))
-	for _, operation := range []Operation{OperationRun, OperationStatus, OperationResume, OperationRetry} {
+	for _, operation := range []Operation{OperationRun, OperationStatus, OperationResume, OperationRetry, OperationPrune} {
 		command.AddCommand(newSourceCommand(operation, services))
 	}
 	return command

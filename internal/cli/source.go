@@ -31,7 +31,7 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			return err
 		},
 		RunE: func(command *cobra.Command, args []string) error {
-			if (operation == OperationRun || operation == OperationResume || operation == OperationRetry) && services.Getenv("AWDEV_WORKER") == "1" {
+			if (operation == OperationRun || operation == OperationResume || operation == OperationRetry || operation == OperationPrune) && services.Getenv("AWDEV_WORKER") == "1" {
 				return fmt.Errorf("awdev %s cannot be invoked from an awdev worker", operation)
 			}
 
@@ -39,11 +39,13 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if services.ValidateConfig == nil {
-				return errors.New("configuration validation is unavailable")
-			}
-			if err := services.ValidateConfig(root); err != nil {
-				return fmt.Errorf("validate configuration: %w", err)
+			if operation != OperationPrune {
+				if services.ValidateConfig == nil {
+					return errors.New("configuration validation is unavailable")
+				}
+				if err := services.ValidateConfig(root); err != nil {
+					return fmt.Errorf("validate configuration: %w", err)
+				}
 			}
 			item, err := parseSourceItemWithRunOptions(operation, args, &runOptions)
 			if err != nil {
@@ -79,6 +81,14 @@ func newSourceCommand(operation Operation, services Services) *cobra.Command {
 					return err
 				}
 				return renderGitHubPublication(command, result)
+			}
+			if operation == OperationPrune && item.Source == SourceGitHub && services.PruneGitHub != nil {
+				result, err := services.PruneGitHub(command.Context(), root, item.Number)
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "Pruned workflow %s.\n", result.WorkflowID)
+				return err
 			}
 			if services.Execute == nil {
 				return fmt.Errorf("awdev %s github is not implemented yet", operation)
@@ -428,6 +438,8 @@ func sourceCommandDescription(operation Operation) string {
 		return "Resume a blocked workflow for a source item"
 	case OperationRetry:
 		return "Retry a supported workflow action for a source item"
+	case OperationPrune:
+		return "Delete workflow state, worktree, and branch for a source item"
 	default:
 		return "Operate on a source item"
 	}

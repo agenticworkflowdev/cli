@@ -36,6 +36,7 @@ type FileSystem interface {
 	ReadFile(string) ([]byte, error)
 	Rename(string, string) error
 	Remove(string) error
+	RemoveAll(string) error
 	OpenDirectory(string) (SyncDirectory, error)
 }
 
@@ -65,6 +66,16 @@ func ManifestPath(controllerRoot, workflowID string) (string, error) {
 
 // Read returns one complete, strictly decoded, validated manifest.
 func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
+	return store.read(controllerRoot, workflowID, true)
+}
+
+// ReadForPrune validates manifest identity and controller-owned paths without
+// requiring artifacts inside a worktree that may already have been removed.
+func (store *Store) ReadForPrune(controllerRoot, workflowID string) (Manifest, error) {
+	return store.read(controllerRoot, workflowID, false)
+}
+
+func (store *Store) read(controllerRoot, workflowID string, requireWorktreeArtifacts bool) (Manifest, error) {
 	if store == nil || store.filesystem == nil {
 		return Manifest{}, errors.New("manifest store is not configured")
 	}
@@ -102,7 +113,7 @@ func (store *Store) Read(controllerRoot, workflowID string) (Manifest, error) {
 	if err := manifest.Validate(); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
 	}
-	if err := store.validateControllerPaths(controllerRoot, manifest); err != nil {
+	if err := store.validateControllerPaths(controllerRoot, manifest, requireWorktreeArtifacts); err != nil {
 		return Manifest{}, fmt.Errorf("validate workflow manifest: %w", err)
 	}
 	if migrated {
@@ -125,7 +136,7 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
 	}
-	if err := store.validateControllerPaths(controllerRoot, manifest); err != nil {
+	if err := store.validateControllerPaths(controllerRoot, manifest, true); err != nil {
 		return fmt.Errorf("validate workflow manifest: %w", err)
 	}
 	manifestPath, err := ManifestPath(controllerRoot, manifest.WorkflowID)
@@ -140,6 +151,21 @@ func (store *Store) Save(controllerRoot string, manifest Manifest) error {
 		return fmt.Errorf("validate workflow manifest path: %w", err)
 	}
 	return store.replaceJSON(directory, manifestPath, ".manifest-*.tmp", "workflow manifest", manifest)
+}
+
+// Delete removes the complete durable state directory for one workflow.
+func (store *Store) Delete(controllerRoot, workflowID string) error {
+	if store == nil || store.filesystem == nil {
+		return errors.New("manifest store is not configured")
+	}
+	directory, err := store.ensureStateDirectory(controllerRoot, workflowID, false)
+	if err != nil {
+		return fmt.Errorf("validate workflow state directory: %w", err)
+	}
+	if err := store.filesystem.RemoveAll(directory); err != nil {
+		return fmt.Errorf("remove workflow state directory: %w", err)
+	}
+	return nil
 }
 
 func (store *Store) replaceJSON(directory, destination, pattern, label string, value any) error {
@@ -272,7 +298,7 @@ func (store *Store) workflowIDs(controllerRoot string) ([]string, error) {
 	return workflowIDs, nil
 }
 
-func (store *Store) validateControllerPaths(controllerRoot string, manifest Manifest) error {
+func (store *Store) validateControllerPaths(controllerRoot string, manifest Manifest, requireWorktreeArtifacts bool) error {
 	if !filepath.IsAbs(controllerRoot) || filepath.Clean(controllerRoot) != controllerRoot {
 		return errors.New("controller root must be an absolute clean path")
 	}
@@ -308,7 +334,7 @@ func (store *Store) validateControllerPaths(controllerRoot string, manifest Mani
 	if err != nil || canonicalManifestRoot != canonicalRoot {
 		return errors.New("manifest worktree is outside the controller-owned worktree directory")
 	}
-	if manifest.SpecificationPath != "" {
+	if requireWorktreeArtifacts && manifest.SpecificationPath != "" {
 		return verifySpecificationFile(store.filesystem, absoluteWorktree, manifest.SpecificationPath)
 	}
 	return nil
@@ -382,4 +408,5 @@ func (OSFileSystem) CreateTemp(directory, pattern string) (AtomicFile, error) {
 func (OSFileSystem) ReadFile(path string) ([]byte, error)             { return os.ReadFile(path) }
 func (OSFileSystem) Rename(oldPath, newPath string) error             { return os.Rename(oldPath, newPath) }
 func (OSFileSystem) Remove(path string) error                         { return os.Remove(path) }
+func (OSFileSystem) RemoveAll(path string) error                      { return os.RemoveAll(path) }
 func (OSFileSystem) OpenDirectory(path string) (SyncDirectory, error) { return os.Open(path) }

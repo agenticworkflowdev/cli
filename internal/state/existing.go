@@ -28,6 +28,16 @@ func NewManifestReader() ManifestReader { return ManifestReader{store: NewStore(
 
 // ReadExisting returns Exists=false only when manifest.json is absent.
 func (reader ManifestReader) ReadExisting(controllerRoot string, issueNumber int) (ExistingWorkflow, error) {
+	return reader.readExisting(controllerRoot, issueNumber, reader.store.Read)
+}
+
+// ReadExistingForPrune reads cleanup metadata without requiring worktree files
+// that an earlier prune attempt may already have removed.
+func (reader ManifestReader) ReadExistingForPrune(controllerRoot string, issueNumber int) (ExistingWorkflow, error) {
+	return reader.readExisting(controllerRoot, issueNumber, reader.store.ReadForPrune)
+}
+
+func (reader ManifestReader) readExisting(controllerRoot string, issueNumber int, read func(string, string) (Manifest, error)) (ExistingWorkflow, error) {
 	if issueNumber <= 0 {
 		return ExistingWorkflow{}, errors.New("issue number must be positive")
 	}
@@ -37,7 +47,7 @@ func (reader ManifestReader) ReadExisting(controllerRoot string, issueNumber int
 	}
 	var existing ExistingWorkflow
 	for _, workflowID := range workflowIDs {
-		manifest, readErr := reader.store.Read(controllerRoot, workflowID)
+		manifest, readErr := read(controllerRoot, workflowID)
 		if errors.Is(readErr, os.ErrNotExist) {
 			continue
 		}
