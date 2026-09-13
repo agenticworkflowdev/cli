@@ -182,23 +182,28 @@ func (service *ImplementationService) Implement(ctx context.Context, controllerR
 }
 
 // Resume continues implementation in its prior provider session, then repeats
-// the complete deterministic check and bounded repair cycle. Legacy manifests
-// without a session identity start a fresh session.
+// the complete deterministic check and bounded repair cycle. An answered
+// blocker uses the human-direction prompt; a technical-failure retry uses the
+// normal implementation prompt. Manifests without a session start a fresh one.
 func (service *ImplementationService) Resume(ctx context.Context, controllerRoot, workflowID string) (ImplementationResult, error) {
 	if err := service.validate(); err != nil {
 		return ImplementationResult{}, err
-	}
-	if service.resumePrompt == nil {
-		return ImplementationResult{}, errors.New("implementation resume prompt is not configured")
 	}
 	current, err := service.reader.Read(controllerRoot, workflowID)
 	if err != nil {
 		return ImplementationResult{}, fmt.Errorf("read persisted workflow for implementation resume: %w", err)
 	}
-	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || !hasRequirements(current) || current.Blocker == nil || current.Blocker.Answer == nil {
-		return ImplementationResult{}, fmt.Errorf("implementation resume requires answered implementation/running state, got %s/%s", current.Phase, current.Status)
+	if current.Phase != state.PhaseImplementation || current.Status != state.StatusRunning || !hasRequirements(current) || current.Blocker != nil && current.Blocker.Answer == nil {
+		return ImplementationResult{}, fmt.Errorf("implementation resume requires implementation/running state with no blocker or an answered blocker, got %s/%s", current.Phase, current.Status)
 	}
-	return service.run(ctx, controllerRoot, current, service.resumePrompt, "")
+	renderer := service.implementPrompt
+	if current.Blocker != nil {
+		if service.resumePrompt == nil {
+			return ImplementationResult{}, errors.New("implementation resume prompt is not configured")
+		}
+		renderer = service.resumePrompt
+	}
+	return service.run(ctx, controllerRoot, current, renderer, "")
 }
 
 func (service *ImplementationService) validate() error {

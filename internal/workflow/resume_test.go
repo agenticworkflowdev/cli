@@ -165,6 +165,75 @@ func TestResumeContinuationDispatchesTheRecordedPhaseAndNormalDownstreamGates(t 
 	}
 }
 
+func TestResumeGitHubContinuesFailedWorkflowWithoutGitHubAnswer(t *testing.T) {
+	for _, phase := range []state.Phase{state.PhaseSpec, state.PhaseImplementation, state.PhaseReview} {
+		t.Run(string(phase), func(t *testing.T) {
+			root := t.TempDir()
+			manifest := blockedResumeManifest(phase)
+			manifest.Status = state.StatusFailed
+			manifest.BlockerSequence = 0
+			manifest.Blocker = nil
+			manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "configuration is unavailable"}
+			prepareResumeState(t, root, &manifest)
+			store := state.NewStore()
+			if err := store.Save(root, manifest); err != nil {
+				t.Fatal(err)
+			}
+			continuation := &fakeResumeContinuation{store: store}
+			events := []string{}
+			service := workflow.NewResumeService(
+				fakeLocker{events: &events, lock: &fakeLock{events: &events}}, state.NewManifestReader(),
+				state.NewTransitionService(store), &fakeCommentGateway{listErr: errors.New("comments must not be listed")}, nil, continuation,
+			)
+
+			result, err := service.ResumeGitHub(context.Background(), root, 17)
+			if err != nil {
+				t.Fatalf("resume failed workflow: %v", err)
+			}
+			if result.Outcome != workflow.ResumeContinued || !continuation.called || continuation.phase != phase {
+				t.Fatalf("result = %#v, continuation = %#v", result, continuation)
+			}
+			if result.Answer != nil || result.Manifest.Status != state.StatusRunning || result.Manifest.LastError != nil {
+				t.Fatalf("resumed manifest = %#v, answer = %#v", result.Manifest, result.Answer)
+			}
+		})
+	}
+}
+
+func TestResumeGitHubRetriesAnswerSelectionAfterBlockerLookupFailed(t *testing.T) {
+	root := t.TempDir()
+	manifest := blockedResumeManifest(state.PhaseImplementation)
+	manifest.Status = state.StatusFailed
+	manifest.LastError = &state.WorkflowError{Code: "technical_failure", Message: "GitHub was unavailable"}
+	prepareResumeState(t, root, &manifest)
+	store := state.NewStore()
+	if err := store.Save(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+	blocker := blockerIssueComment(manifest)
+	comments := &fakeCommentGateway{comments: []githubapi.IssueComment{
+		blocker,
+		{ID: "101", URL: commentURL("101"), Author: githubapi.CommentAuthor{Login: "human", Type: "User"}, Body: "Use option A", CreatedAt: blocker.CreatedAt.Add(time.Minute)},
+	}}
+	continuation := &fakeResumeContinuation{store: store}
+	events := []string{}
+	service := workflow.NewResumeService(
+		fakeLocker{events: &events, lock: &fakeLock{events: &events}}, state.NewManifestReader(),
+		state.NewTransitionService(store), comments, nil, continuation,
+	)
+
+	result, err := service.ResumeGitHub(context.Background(), root, 17)
+	if err != nil {
+		t.Fatalf("retry blocker answer selection: %v", err)
+	}
+	if result.Outcome != workflow.ResumeContinued || result.Answer == nil || result.Answer.ID != "101" {
+		t.Fatalf("result = %#v", result)
+	}
+	if continuation.answer == nil || continuation.answer.ID != "101" || continuation.answer.Body != "Use option A" {
+		t.Fatalf("continued answer = %#v", continuation.answer)
+	}
+}
+
 func TestResumeContinuationTechnicalErrorBecomesFailed(t *testing.T) {
 	root := t.TempDir()
 	manifest := blockedResumeManifest(state.PhaseImplementation)

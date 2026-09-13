@@ -110,28 +110,32 @@ func (service *SpecificationService) Create(ctx context.Context, controllerRoot,
 	return service.run(ctx, controllerRoot, running, service.prompt, string(recon))
 }
 
-// Resume continues specification in its prior provider session using the
-// persisted blocker question and selected human answer. Legacy manifests
-// without a session identity start a fresh session.
+// Resume continues specification in its prior provider session. An answered
+// blocker uses the human-direction prompt; a technical-failure retry uses the
+// normal specification prompt. Manifests without a session start a fresh one.
 func (service *SpecificationService) Resume(ctx context.Context, controllerRoot, workflowID string) (SpecificationResult, error) {
 	if err := service.validate(); err != nil {
 		return SpecificationResult{}, err
-	}
-	if service.resumePrompt == nil {
-		return SpecificationResult{}, errors.New("specification resume prompt is not configured")
 	}
 	current, err := service.reader.Read(controllerRoot, workflowID)
 	if err != nil {
 		return SpecificationResult{}, fmt.Errorf("read persisted workflow for specification resume: %w", err)
 	}
-	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.Blocker == nil || current.Blocker.Answer == nil {
-		return SpecificationResult{}, fmt.Errorf("specification resume requires answered spec/running state, got %s/%s", current.Phase, current.Status)
+	if current.Phase != state.PhaseSpec || current.Status != state.StatusRunning || current.Blocker != nil && current.Blocker.Answer == nil {
+		return SpecificationResult{}, fmt.Errorf("specification resume requires spec/running state with no blocker or an answered blocker, got %s/%s", current.Phase, current.Status)
 	}
 	recon, err := service.recon.ReadRecon(controllerRoot, workflowID)
 	if err != nil {
 		return service.fail(controllerRoot, current, fmt.Errorf("read persisted recon for specification resume: %w", err))
 	}
-	return service.run(ctx, controllerRoot, current, service.resumePrompt, string(recon))
+	renderer := service.prompt
+	if current.Blocker != nil {
+		if service.resumePrompt == nil {
+			return SpecificationResult{}, errors.New("specification resume prompt is not configured")
+		}
+		renderer = service.resumePrompt
+	}
+	return service.run(ctx, controllerRoot, current, renderer, string(recon))
 }
 
 func (service *SpecificationService) validate() error {

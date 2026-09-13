@@ -160,6 +160,35 @@ func TestSpecificationResumeUsesPersistedSessionAndTypedBlockerPrompt(t *testing
 	}
 }
 
+func TestSpecificationResumeRetriesTechnicalFailureWithNormalPrompt(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := specificationManifest(t)
+	manifest.Phase = state.PhaseSpec
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Specification: "existing-thread"}
+	stateStore := &specificationState{manifest: manifest, events: &events}
+	promptRenderer := &specificationPrompt{events: &events, rendered: "specification prompt"}
+	runner := &specificationAgent{events: &events, run: func(request agent.Request) (agent.RunResult, error) {
+		writeSpecification(t, controllerRoot, manifest, []byte("# Specification\n"))
+		return agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"done"}`), SessionID: "existing-thread"}, nil
+	}}
+	service := workflow.NewSpecificationService(
+		stateStore, stateStore, successfulSpecificationRecon(stateStore, &events), promptRenderer, runner,
+		&specificationDecoder{events: &events, outcome: agent.Outcome{Status: agent.OutcomeCompleted, Summary: "done"}},
+		filepath.Join(t.TempDir(), "schema.json"), time.Minute, &specificationPrompt{err: errors.New("blocker prompt must not be rendered")},
+	)
+
+	result, err := service.Resume(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("retry specification: %v", err)
+	}
+	if result.Manifest.SpecificationPath == "" || runner.request.Prompt != "specification prompt" || runner.request.ResumeSessionID != "existing-thread" {
+		t.Fatalf("result=%#v request=%#v", result, runner.request)
+	}
+	if promptRenderer.data.Blocker != nil {
+		t.Fatalf("retry prompt blocker data = %#v", promptRenderer.data.Blocker)
+	}
+}
+
 func TestSpecificationResumeRejectsASessionFromAnotherProviderBeforeLaunchingAgent(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := specificationManifest(t)

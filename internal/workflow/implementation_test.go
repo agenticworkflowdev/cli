@@ -128,6 +128,37 @@ func TestImplementationResumeUsesPersistedSessionAndTypedPromptBeforeChecks(t *t
 	}
 }
 
+func TestImplementationResumeRetriesTechnicalFailureWithNormalPrompt(t *testing.T) {
+	events := []string{}
+	manifest, controllerRoot := implementationManifest(t)
+	manifest.Phase = state.PhaseImplementation
+	manifest.AgentSessions = &state.AgentSessions{Provider: agent.ProviderCodex, Implementation: "existing-thread"}
+	stateStore := &implementationState{manifest: manifest, events: &events}
+	promptRenderer := &implementationPrompt{label: "implement", rendered: "implementation prompt", events: &events}
+	agentRunner := &implementationAgent{events: &events, responses: []agentResponse{{result: agent.RunResult{FinalOutput: []byte(`{"status":"completed","summary":"continued"}`), SessionID: "existing-thread"}}}}
+	service := workflow.NewImplementationService(
+		stateStore, stateStore,
+		promptRenderer,
+		&implementationPrompt{label: "repair", events: &events},
+		agentRunner, &implementationDecoder{events: &events, outcomes: []agent.Outcome{{Status: agent.OutcomeCompleted, Summary: "continued"}}},
+		&implementationChecks{events: &events, results: [][]checks.Result{{{Name: "tests", ExitCode: 0}}}},
+		&implementationDiff{events: &events}, &worktreeStateFake{events: &events}, filepath.Join(t.TempDir(), "schema.json"), time.Minute,
+		[]checks.Definition{{Name: "tests", Command: []string{"go", "test"}, Timeout: time.Minute}}, nil,
+		&implementationPrompt{err: errors.New("blocker prompt must not be rendered")},
+	)
+
+	result, err := service.Resume(context.Background(), controllerRoot, manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("retry implementation: %v", err)
+	}
+	if !reflect.DeepEqual(result.SessionIDs, []string{"existing-thread"}) || agentRunner.requests[0].Prompt != "implementation prompt" || agentRunner.requests[0].ResumeSessionID != "existing-thread" || len(result.CheckResults) != 1 {
+		t.Fatalf("result=%#v requests=%#v", result, agentRunner.requests)
+	}
+	if promptRenderer.data.Blocker != nil {
+		t.Fatalf("retry prompt blocker data = %#v", promptRenderer.data.Blocker)
+	}
+}
+
 func TestImplementationDoesNotTrustChecksThatMutateTheWorktree(t *testing.T) {
 	events := []string{}
 	manifest, controllerRoot := implementationManifest(t)

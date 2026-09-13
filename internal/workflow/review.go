@@ -287,22 +287,19 @@ func (service *ReviewService) reviewLoop(ctx context.Context, controllerRoot, ou
 	}
 }
 
-// Resume applies the persisted human direction through the implementation
-// session, reruns deterministic checks, and starts a fresh independent review
-// without resetting the bounded review attempt counter.
+// Resume starts a fresh independent review without resetting the bounded
+// attempt counter. An answered blocker first applies the persisted human
+// direction; a technical-failure retry reruns deterministic checks directly.
 func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workflowID string) (ReviewResult, error) {
 	if err := service.validate(); err != nil {
 		return ReviewResult{}, err
-	}
-	if service.resumePrompt == nil {
-		return ReviewResult{}, errors.New("review resume prompt is not configured")
 	}
 	current, err := service.reader.Read(controllerRoot, workflowID)
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("read persisted workflow for review resume: %w", err)
 	}
-	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || !hasRequirements(current) || current.Review == nil || current.Blocker == nil || current.Blocker.Answer == nil {
-		return ReviewResult{}, fmt.Errorf("review resume requires answered review/running state, got %s/%s", current.Phase, current.Status)
+	if current.Phase != state.PhaseReview || current.Status != state.StatusRunning || !hasRequirements(current) || current.Review == nil || current.Blocker != nil && current.Blocker.Answer == nil {
+		return ReviewResult{}, fmt.Errorf("review resume requires review/running state with no blocker or an answered blocker, got %s/%s", current.Phase, current.Status)
 	}
 	absoluteWorktree, err := state.ResolveWorktreePath(controllerRoot, current.Worktree)
 	if err != nil {
@@ -314,43 +311,48 @@ func (service *ReviewService) Resume(ctx context.Context, controllerRoot, workfl
 	}
 	result := ReviewResult{Manifest: current}
 	if err := service.evidence.InvalidateReview(controllerRoot, workflowID); err != nil {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("invalidate review evidence before human-directed correction: %w", err))
+		return service.fail(controllerRoot, current, result, fmt.Errorf("invalidate review evidence before resumed review: %w", err))
 	}
 	baseData := promptData(current, current.SpecificationPath, "")
-	resumeSessionID, err := resumableAgentSession(current, implementationSessionRole, service.runner)
-	if err != nil {
-		return service.fail(controllerRoot, current, result, err)
-	}
-	outcome, runResult, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.resumePrompt, baseData, resumeSessionID)
-	result.observe(runResult)
-	if err != nil {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("run human-directed review correction: %w", err))
-	}
-	current, err = persistAgentSession(service.transition, controllerRoot, current, implementationSessionRole, runResult.SessionID, service.runner)
-	if err != nil {
-		return service.fail(controllerRoot, current, result, err)
-	}
-	result.Manifest = current
-	if outcome.Status == agent.OutcomeBlocked {
-		result.Blocker = &BlockerRequest{Phase: state.PhaseReview, Question: outcome.Question}
-		return result, nil
+	if current.Blocker != nil {
+		if service.resumePrompt == nil {
+			return ReviewResult{}, errors.New("review resume prompt is not configured")
+		}
+		resumeSessionID, err := resumableAgentSession(current, implementationSessionRole, service.runner)
+		if err != nil {
+			return service.fail(controllerRoot, current, result, err)
+		}
+		outcome, runResult, err := service.runCorrection(ctx, controllerRoot, absoluteWorktree, filepath.Dir(manifestPath), service.resumePrompt, baseData, resumeSessionID)
+		result.observe(runResult)
+		if err != nil {
+			return service.fail(controllerRoot, current, result, fmt.Errorf("run human-directed review correction: %w", err))
+		}
+		current, err = persistAgentSession(service.transition, controllerRoot, current, implementationSessionRole, runResult.SessionID, service.runner)
+		if err != nil {
+			return service.fail(controllerRoot, current, result, err)
+		}
+		result.Manifest = current
+		if outcome.Status == agent.OutcomeBlocked {
+			result.Blocker = &BlockerRequest{Phase: state.PhaseReview, Question: outcome.Question}
+			return result, nil
+		}
 	}
 	checkedState, err := service.worktree.Capture(ctx, absoluteWorktree)
 	if err != nil {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("capture pre-check resumed worktree state: %w", err))
+		return service.fail(controllerRoot, current, result, fmt.Errorf("capture pre-check resumed review worktree state: %w", err))
 	}
 	checkResults, err := service.checks.Run(ctx, absoluteWorktree, service.definitions)
 	result.CheckResults = cloneCheckResults(checkResults)
 	if err != nil {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("run deterministic checks after human direction: %w", err))
+		return service.fail(controllerRoot, current, result, fmt.Errorf("run deterministic checks before resumed review: %w", err))
 	}
 	if changed, inspectErr := service.worktree.Inspect(ctx, absoluteWorktree, checkedState); inspectErr != nil {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("verify resumed checked worktree state: %w", inspectErr))
+		return service.fail(controllerRoot, current, result, fmt.Errorf("verify resumed review checked worktree state: %w", inspectErr))
 	} else if len(changed) > 0 {
-		return service.fail(controllerRoot, current, result, fmt.Errorf("deterministic checks changed resumed worktree paths: %s", strings.Join(changed, ", ")))
+		return service.fail(controllerRoot, current, result, fmt.Errorf("deterministic checks changed resumed review worktree paths: %s", strings.Join(changed, ", ")))
 	}
 	if failed := failedCheckResults(checkResults); len(failed) > 0 {
-		return service.fail(controllerRoot, current, result, errors.New("deterministic checks failed after human direction"))
+		return service.fail(controllerRoot, current, result, errors.New("deterministic checks failed before resumed review"))
 	}
 	return service.reviewLoop(ctx, controllerRoot, filepath.Dir(manifestPath), absoluteWorktree, baseData, result, checkedState)
 }

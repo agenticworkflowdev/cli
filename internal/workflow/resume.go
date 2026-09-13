@@ -73,7 +73,7 @@ func NewResumeService(locker state.Locker, existing state.ExistingReader, transi
 	}
 }
 
-// ResumeGitHub resumes only a blocked workflow for the selected GitHub issue.
+// ResumeGitHub resumes a blocked or failed workflow for the selected GitHub issue.
 func (service *ResumeService) ResumeGitHub(ctx context.Context, controllerRoot string, issueNumber int) (result ResumeResult, err error) {
 	if issueNumber <= 0 {
 		return ResumeResult{}, errors.New("issue number must be positive")
@@ -107,33 +107,40 @@ func (service *ResumeService) ResumeGitHub(ctx context.Context, controllerRoot s
 	if current.Source != state.SourceGitHub || current.Issue.Number != issueNumber {
 		return ResumeResult{}, errors.New("saved workflow does not match the requested GitHub issue")
 	}
-	if current.Status != state.StatusBlocked || current.Blocker == nil || current.Blocker.Comment == nil {
-		return ResumeResult{}, fmt.Errorf("resume requires a blocked workflow, got %s/%s", current.Phase, current.Status)
-	}
-
-	comments, err := service.comments.ListIssueComments(ctx, controllerRoot, current.Repository, issueNumber)
-	if err != nil {
-		return service.failBlocked(controllerRoot, current, fmt.Errorf("list GitHub replies: %w", err))
-	}
-	blockerComment, found := findRecordedBlockerComment(comments, current)
-	if !found {
-		return service.failBlocked(controllerRoot, current, errors.New("recorded blocker comment is missing from GitHub"))
-	}
-	answerComment, found := selectBlockerAnswer(comments, blockerComment, current.Repository, issueNumber)
-	if !found {
-		return ResumeResult{Outcome: ResumeWaiting, Manifest: current}, nil
-	}
-
-	answer := &state.BlockerAnswer{
-		ID: answerComment.ID, URL: answerComment.URL, Body: answerComment.Body,
-		Author: answerComment.Author.Login, CreatedAt: answerComment.CreatedAt,
-	}
 	resumed := current
 	resumed.Status = state.StatusRunning
-	resumed.Blocker = cloneBlocker(current.Blocker)
-	resumed.Blocker.Answer = answer
+	resumed.LastError = nil
+	var answer *state.BlockerAnswer
+	needsBlockerAnswer := current.Status == state.StatusBlocked || current.Status == state.StatusFailed && current.Blocker != nil && current.Blocker.Answer == nil
+	switch {
+	case needsBlockerAnswer:
+		if current.Blocker == nil || current.Blocker.Comment == nil {
+			return ResumeResult{}, fmt.Errorf("resume requires a published blocker, got %s/%s", current.Phase, current.Status)
+		}
+		comments, err := service.comments.ListIssueComments(ctx, controllerRoot, current.Repository, issueNumber)
+		if err != nil {
+			return service.failBlocked(controllerRoot, current, fmt.Errorf("list GitHub replies: %w", err))
+		}
+		blockerComment, found := findRecordedBlockerComment(comments, current)
+		if !found {
+			return service.failBlocked(controllerRoot, current, errors.New("recorded blocker comment is missing from GitHub"))
+		}
+		answerComment, found := selectBlockerAnswer(comments, blockerComment, current.Repository, issueNumber)
+		if !found {
+			return ResumeResult{Outcome: ResumeWaiting, Manifest: current}, nil
+		}
+		answer = &state.BlockerAnswer{
+			ID: answerComment.ID, URL: answerComment.URL, Body: answerComment.Body,
+			Author: answerComment.Author.Login, CreatedAt: answerComment.CreatedAt,
+		}
+		resumed.Blocker = cloneBlocker(current.Blocker)
+		resumed.Blocker.Answer = answer
+	case current.Status == state.StatusFailed:
+	default:
+		return ResumeResult{}, fmt.Errorf("resume requires a blocked or failed workflow, got %s/%s", current.Phase, current.Status)
+	}
 	if err := service.transition.Transition(controllerRoot, current.WorkflowID, resumed); err != nil {
-		return ResumeResult{Manifest: current}, fmt.Errorf("persist selected blocker answer: %w", err)
+		return ResumeResult{Manifest: current}, fmt.Errorf("persist resumed workflow: %w", err)
 	}
 
 	continued, err := service.continuation.ContinueResume(ctx, controllerRoot, current.WorkflowID, current.Phase)

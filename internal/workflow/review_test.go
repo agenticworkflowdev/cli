@@ -213,6 +213,28 @@ func TestReviewResumeAppliesHumanDirectionRunsChecksAndStartsFreshReview(t *test
 	}
 }
 
+func TestReviewResumeRetriesTechnicalFailureWithNormalReview(t *testing.T) {
+	fixture := newReviewFixture(t, 3)
+	fixture.state.manifest.Phase = state.PhaseReview
+	fixture.state.manifest.Review = &state.ReviewCounters{Attempt: 1, MaxAttempts: 3}
+	fixture.checkRunner.results = [][]checks.Result{fixture.passing}
+	fixture.reviewDecoder.results = []review.Result{{Approved: true, Findings: []review.Finding{}}}
+
+	result, err := fixture.service.Resume(context.Background(), fixture.root, fixture.state.manifest.WorkflowID)
+	if err != nil {
+		t.Fatalf("retry review: %v", err)
+	}
+	if result.Evidence == nil || !result.Evidence.Approved || len(fixture.runner.requests) != 1 || fixture.runner.requests[0].Access != agent.AccessReadOnly {
+		t.Fatalf("result=%#v requests=%#v", result, fixture.runner.requests)
+	}
+	if len(fixture.reviewPrompt.datas) != 1 || len(fixture.resumePrompt.datas) != 0 {
+		t.Fatalf("review prompts=%#v resume prompts=%#v", fixture.reviewPrompt.datas, fixture.resumePrompt.datas)
+	}
+	if !containsEvent(fixture.events, "invalidate") || len(fixture.checkRunner.definitions) != 1 {
+		t.Fatalf("events=%v checks=%v", fixture.events, fixture.checkRunner.definitions)
+	}
+}
+
 func TestReviewNeverExceedsAGreaterAttemptCap(t *testing.T) {
 	fixture := newReviewFixture(t, 3)
 	rejected := review.Result{Approved: false, Findings: []review.Finding{{Severity: review.SeverityMedium, Message: "Still needs correction."}}}
